@@ -66,6 +66,10 @@ export function App() {
   const [showHiddenSheets, setShowHiddenSheets] = useState<boolean>(false);
   const [dismissedHiddenNotice, setDismissedHiddenNotice] = useState<boolean>(false);
 
+  // Accessibility & Simplicity State for Excel users
+  const [uiScale, setUiScale] = useState<number>(1.0); // 1.0 (Normal), 1.15 (Large), 1.3 (Extra Large)
+  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false); // Closed by default so spreadsheet has 100% width
+
   // PostgreSQL & Storage Backend State
   const [dbStatus, setDbStatus] = useState<{
     checked: boolean;
@@ -119,7 +123,7 @@ export function App() {
         ...prev,
         checked: true,
         connected: false,
-        error: 'Backend API server is not running on port 3001.',
+        error: 'Backend server is not connected.',
       }));
     }
   }, []);
@@ -151,7 +155,7 @@ export function App() {
       const data = await res.json();
       if (!res.ok) {
         dbDrawerDialogRef.current?.showModal();
-        showToast(data.error || 'Could not save to PostgreSQL');
+        showToast(data.error || 'Could not save workbook');
         return;
       }
       setProject((prev) => ({
@@ -162,10 +166,10 @@ export function App() {
       }));
       setRawUploadedBase64(null);
       await fetchBackendStatusAndWorkbooks();
-      showToast(`Saved "${project.fileName}" (${project.sheets.length} sheets) to PostgreSQL`);
+      showToast(`Saved "${project.fileName}"`);
     } catch {
       dbDrawerDialogRef.current?.showModal();
-      showToast('Failed to reach PostgreSQL API');
+      showToast('Could not connect to database');
     } finally {
       setIsSavingToDb(false);
     }
@@ -176,7 +180,7 @@ export function App() {
     try {
       const res = await fetch(`/api/workbooks/${workbookId}`);
       if (!res.ok) {
-        showToast('Failed to load workbook from PostgreSQL');
+        showToast('Could not open file');
         return;
       }
       const loaded: WorkbookProject = await res.json();
@@ -193,7 +197,7 @@ export function App() {
             : null
         );
         dbDrawerDialogRef.current?.close();
-        showToast(`Loaded "${loaded.fileName}" from PostgreSQL`);
+        showToast(`Opened "${loaded.fileName}"`);
       }
     } finally {
       setIsLoadingFromDb(false);
@@ -207,7 +211,7 @@ export function App() {
       if (project.id === workbookId) {
         setProject((prev) => ({ ...prev, id: undefined }));
       }
-      showToast(`Deleted "${fileName}" from PostgreSQL`);
+      showToast(`Deleted "${fileName}"`);
     }
   };
 
@@ -291,7 +295,6 @@ export function App() {
       setProject(parsed);
       setRawUploadedBase64(arrayBufferToBase64(buffer));
       setDismissedHiddenNotice(false);
-      // Prefer selecting the first visible sheet by default
       const firstVisible = parsed.sheets.find((s) => !s.hiddenState) || parsed.sheets[0];
       setActiveSheetId(firstVisible.id);
       setSelectedFieldId(firstVisible.fields[0]?.id || '');
@@ -434,7 +437,8 @@ export function App() {
         ...sheet.rows,
         {
           id: newRowId,
-          excelRowNumber: (sheet.rows[sheet.rows.length - 1]?.excelRowNumber || sheet.rows.length) + 1,
+          excelRowNumber:
+            (sheet.rows[sheet.rows.length - 1]?.excelRowNumber || sheet.rows.length) + 1,
           cells: initialCells,
         },
       ],
@@ -455,16 +459,16 @@ export function App() {
   const handleAddField = () => {
     const colLetter = getExcelColumnLetter(activeSheet.fields.length);
     const isHeaderless = activeSheet.headerRowIndex === -1;
-    const label = isHeaderless ? colLetter : `Field ${activeSheet.fields.length + 1}`;
+    const label = isHeaderless ? colLetter : `Column ${colLetter}`;
     const newField: FieldConfig = {
       id: `fld_${Date.now().toString(36)}`,
-      key: isHeaderless ? `col_${colLetter.toLowerCase()}` : `field_${activeSheet.fields.length + 1}`,
+      key: `col_${colLetter.toLowerCase()}`,
       label,
       sourceHeader: isHeaderless ? `(No Header — Col ${colLetter})` : label,
       columnLetter: colLetter,
       type: 'text',
       visible: true,
-      width: 150,
+      width: 170,
       defaultValue: '',
       selectOptions: ['Option A', 'Option B'],
       validation: {},
@@ -529,7 +533,7 @@ export function App() {
           columnLetter: 'A',
           type: 'text',
           visible: true,
-          width: 160,
+          width: 170,
           defaultValue: '',
           validation: {},
         },
@@ -541,7 +545,7 @@ export function App() {
           columnLetter: 'B',
           type: 'text',
           visible: true,
-          width: 160,
+          width: 170,
           defaultValue: '',
           validation: {},
         },
@@ -553,7 +557,7 @@ export function App() {
           columnLetter: 'C',
           type: 'text',
           visible: true,
-          width: 160,
+          width: 170,
           defaultValue: '',
           validation: {},
         },
@@ -616,15 +620,13 @@ export function App() {
   const isHeaderlessSheet = activeSheet.headerRowIndex === -1;
 
   return (
-    <div className="app-shell">
-      {/* Top Editorial Bar */}
+    <div
+      className="app-shell"
+      style={{ '--ui-scale': uiScale } as React.CSSProperties}
+    >
+      {/* 1. Simple, Readable Top Bar */}
       <header className="top-navbar">
         <div className="brand-cluster">
-          <div className="os-dots" aria-hidden="true">
-            <span className="os-dot" />
-            <span className="os-dot" />
-            <span className="os-dot" />
-          </div>
           <span className="brand-title">Tabula Loom</span>
           <div className="divider-vertical" />
           <input
@@ -633,15 +635,12 @@ export function App() {
             value={project.fileName}
             onChange={(e) => setProject((p) => ({ ...p, fileName: e.target.value }))}
             aria-label="Workbook file name"
+            title="Click to rename workbook"
           />
-          {totalErrorCount === 0 ? (
-            <span className="status-pill valid">
-              <IconCheck size={11} /> Schema Valid
-            </span>
-          ) : (
+          {totalErrorCount > 0 && (
             <span
               className="status-pill invalid"
-              title="Click to inspect validation issues"
+              title="Click to jump to the first cell that needs attention"
               onClick={() => {
                 const firstErr = Object.values(activeSheetErrors)[0];
                 if (firstErr) {
@@ -650,18 +649,16 @@ export function App() {
                 }
               }}
             >
-              <IconWarning size={11} /> {totalErrorCount} Validation{' '}
-              {totalErrorCount === 1 ? 'Issue' : 'Issues'}
+              <IconWarning size={14} /> {totalErrorCount}{' '}
+              {totalErrorCount === 1 ? 'cell needs' : 'cells need'} attention
             </span>
           )}
           {saveToastMessage && (
-            <span className="status-pill info" style={{ textTransform: 'none' }}>
-              {saveToastMessage}
-            </span>
+            <span className="status-pill info">{saveToastMessage}</span>
           )}
         </div>
 
-        {/* Center Mode Switcher */}
+        {/* Center View Switcher */}
         <div className="mode-switcher" role="tablist" aria-label="Workspace view mode">
           <button
             type="button"
@@ -670,8 +667,8 @@ export function App() {
             className={`mode-btn ${workspaceMode === 'grid' ? 'active' : ''}`}
             onClick={() => setWorkspaceMode('grid')}
           >
-            <IconTable size={14} />
-            Spreadsheet & Inspector
+            <IconTable size={15} />
+            Spreadsheet
           </button>
           <button
             type="button"
@@ -680,13 +677,36 @@ export function App() {
             className={`mode-btn ${workspaceMode === 'schema' ? 'active' : ''}`}
             onClick={() => setWorkspaceMode('schema')}
           >
-            <IconSliders size={14} />
-            Fields Configuration ({activeSheet.fields.length})
+            <IconSliders size={15} />
+            All Column Settings ({activeSheet.fields.length})
           </button>
         </div>
 
-        {/* Right File & PostgreSQL Actions */}
+        {/* Right File & Zoom Actions */}
         <div className="top-actions">
+          {/* Text Size / Zoom Control for Older Users */}
+          <div
+            className="mode-switcher"
+            title="Adjust spreadsheet text and row size"
+            aria-label="Text size"
+          >
+            {[
+              { label: '100%', val: 1.0 },
+              { label: '115%', val: 1.15 },
+              { label: '130%', val: 1.3 },
+            ].map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                className={`mode-btn ${uiScale === item.val ? 'active' : ''}`}
+                style={{ padding: '5px 9px', fontSize: '13px' }}
+                onClick={() => setUiScale(item.val)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
           <input
             ref={fileInputRef}
             type="file"
@@ -697,48 +717,40 @@ export function App() {
           <button
             type="button"
             className="btn"
+            onClick={() => fileInputRef.current?.click()}
+            title="Open an Excel (.xlsx, .xls) or CSV file from your computer"
+          >
+            <IconUpload size={15} />
+            Open Excel
+          </button>
+          <button
+            type="button"
+            className="btn"
             onClick={() => {
               fetchBackendStatusAndWorkbooks();
               dbDrawerDialogRef.current?.showModal();
             }}
-            title="Manage saved workbooks in PostgreSQL & Railway Storage"
+            title="Open or manage saved files in database"
           >
-            <IconDatabase size={14} />
-            PostgreSQL ({savedWorkbooks.length})
-            <span
-              style={{
-                width: '7px',
-                height: '7px',
-                borderRadius: '50%',
-                backgroundColor: dbStatus.connected ? '#346538' : '#956400',
-              }}
-            />
+            <IconDatabase size={15} />
+            Saved Files ({savedWorkbooks.length})
           </button>
           <button
             type="button"
             className="btn"
             disabled={isSavingToDb}
             onClick={handleSaveToPostgres}
-            title="Save all sheets, dynamic field schemas, and rows to PostgreSQL"
+            title="Save workbook to database"
           >
-            {isSavingToDb ? 'Saving...' : project.id ? 'Sync to DB' : 'Save to DB'}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => fileInputRef.current?.click()}
-            title="Import an .xlsx, .xls, or .csv workbook"
-          >
-            <IconUpload size={14} />
-            Import .xlsx
+            {isSavingToDb ? 'Saving...' : 'Save'}
           </button>
           <button
             type="button"
             className="btn btn-primary"
             onClick={() => exportDialogRef.current?.showModal()}
           >
-            <IconDownload size={14} />
-            Export .xlsx
+            <IconDownload size={15} />
+            Download Excel
           </button>
         </div>
       </header>
@@ -750,39 +762,23 @@ export function App() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '7px 20px',
+            padding: '10px 20px',
             backgroundColor: 'var(--pastel-yellow-bg)',
-            borderBottom: '1px solid #EFE0B4',
+            borderBottom: '1px solid #E5D4A0',
             color: 'var(--pastel-yellow-fg)',
-            fontSize: '12.5px',
+            fontSize: '14px',
             flexShrink: 0,
             gap: '12px',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <IconWarning size={14} />
+            <IconWarning size={16} />
             <span>
               <strong>
-                {hiddenSheets.length} hidden{' '}
-                {hiddenSheets.length === 1 ? 'worksheet was' : 'worksheets were'} found
+                This Excel file contains {hiddenSheets.length} hidden{' '}
+                {hiddenSheets.length === 1 ? 'sheet' : 'sheets'}:
               </strong>{' '}
-              in <code>{project.fileName}</code>:{' '}
-              {hiddenSheets.map((hs, idx) => (
-                <React.Fragment key={hs.id}>
-                  <code
-                    style={{
-                      background: 'rgba(255,255,255,0.65)',
-                      padding: '1px 6px',
-                      borderRadius: '4px',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {hs.name}
-                    {hs.hiddenState === 2 ? ' (VeryHidden)' : ' (Hidden)'}
-                  </code>
-                  {idx < hiddenSheets.length - 1 ? ', ' : ''}
-                </React.Fragment>
-              ))}
+              {hiddenSheets.map((hs) => hs.name).join(', ')}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -791,20 +787,18 @@ export function App() {
               className="btn btn-sm"
               style={{
                 backgroundColor: '#FFFFFF',
-                borderColor: '#DFC98B',
-                color: '#785000',
+                borderColor: '#D6C080',
+                color: '#6E4800',
               }}
               onClick={() => setShowHiddenSheets((prev) => !prev)}
             >
-              <IconEye visible={showHiddenSheets} size={13} />
-              {showHiddenSheets
-                ? 'Hide Hidden Sheets'
-                : `Show Hidden ${hiddenSheets.length === 1 ? 'Sheet' : 'Sheets'} (${hiddenSheets.length})`}
+              <IconEye visible={showHiddenSheets} size={14} />
+              {showHiddenSheets ? 'Hide Hidden Sheets' : 'Show Hidden Sheets'}
             </button>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              style={{ color: '#785000' }}
+              style={{ color: '#6E4800' }}
               onClick={() => setDismissedHiddenNotice(true)}
             >
               Dismiss
@@ -813,205 +807,26 @@ export function App() {
         </div>
       )}
 
-      {/* Secondary Sheet Navigation & Quick Toolbar */}
-      <div className="sheet-toolbar">
-        <div className="sheet-tabs-bar" role="tablist" aria-label="Workbook sheets">
-          {displayedSheets.map((sheet) => {
-            const sheetErrCount = Object.keys(sheetErrorsMap[sheet.id] || {}).length;
-            const isActive = sheet.id === activeSheet.id;
-            const isHiddenSheet = Boolean(sheet.hiddenState);
-            const isNoHeader = sheet.headerRowIndex === -1;
-            return (
-              <button
-                key={sheet.id}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                className={`sheet-tab ${isActive ? 'active' : ''}`}
-                onClick={() => handleSelectSheet(sheet.id)}
-                style={
-                  isHiddenSheet
-                    ? {
-                        borderStyle: 'dashed',
-                        borderColor: isActive ? '#956400' : 'var(--border-strong)',
-                        opacity: isActive ? 1 : 0.78,
-                      }
-                    : undefined
-                }
-              >
-                {isHiddenSheet && (
-                  <span
-                    className="status-pill warn"
-                    style={{ padding: '0px 5px', fontSize: '9.5px' }}
-                    title="This worksheet is marked Hidden in the Excel file"
-                  >
-                    HIDDEN
-                  </span>
-                )}
-                <span>{sheet.name}</span>
-                {isNoHeader && (
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '10px',
-                      color: 'var(--text-muted)',
-                      border: '1px solid var(--border-hairline)',
-                      borderRadius: '3px',
-                      padding: '0 4px',
-                    }}
-                    title="No header row detected — using column letters A, B, C..."
-                  >
-                    A·B·C
-                  </span>
-                )}
-                <span
-                  className="sheet-tab-count"
-                  title={`${sheet.fields.length} columns, ${sheet.rows.length} rows`}
-                >
-                  {sheet.fields.length}c · {sheet.rows.length}r
-                </span>
-                {sheetErrCount > 0 && (
-                  <span
-                    style={{
-                      color: 'var(--pastel-red-fg)',
-                      fontSize: '11px',
-                      fontFamily: 'var(--font-mono)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    !{sheetErrCount}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {hiddenSheets.length > 0 && dismissedHiddenNotice && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowHiddenSheets((prev) => !prev)}
-              title={`Hidden sheets: ${hiddenSheets.map((s) => s.name).join(', ')}`}
-            >
-              <IconEye visible={showHiddenSheets} size={13} />
-              {showHiddenSheets
-                ? `Showing ${hiddenSheets.length} Hidden`
-                : `+${hiddenSheets.length} Hidden`}
-            </button>
-          )}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => newSheetDialogRef.current?.showModal()}
-            title="Create a new worksheet"
-          >
-            <IconPlus size={13} /> New Sheet
-          </button>
-        </div>
-
-        <div className="toolbar-right">
-          {/* Dynamic Header Mode Selector */}
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontSize: '12px',
-              color: 'var(--text-muted)',
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-hairline)',
-              borderRadius: '5px',
-              padding: '0 8px',
-              height: '28px',
-            }}
-            title="Choose whether this sheet has a header row or should use Excel column letters (A, B, C...)"
-          >
-            <span>Headers:</span>
-            <select
-              value={activeSheet.headerRowIndex}
-              onChange={(e) => handleHeaderRowChange(Number(e.target.value))}
-              style={{
-                border: 'none',
-                background: 'transparent',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '12px',
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-                cursor: 'pointer',
-              }}
-            >
-              <option value={-1}>None — Use A, B, C...</option>
-              {(activeSheet.rawMatrix || []).slice(0, 12).map((r, idx) => {
-                const preview = r
-                  .filter((c) => String(c ?? '').trim() !== '')
-                  .slice(0, 3)
-                  .join(', ');
-                return (
-                  <option key={idx} value={idx}>
-                    Row {idx + 1} {preview ? `(${preview.slice(0, 24)})` : '(empty)'}
-                  </option>
-                );
-              })}
-              {!activeSheet.rawMatrix && <option value={0}>Row 1 (Default)</option>}
-            </select>
-          </div>
-
-          <div className="search-box">
-            <IconSearch size={13} />
-            <input
-              type="text"
-              placeholder={`Filter ${activeSheet.name}...`}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => setShowHiddenColumns((prev) => !prev)}
-            title="Toggle visibility of hidden columns in the grid"
-          >
-            <IconEye visible={showHiddenColumns} size={13} />
-            {showHiddenColumns ? 'Showing Hidden Cols' : 'Hide Disabled Cols'}
-          </button>
-          <button type="button" className="btn btn-sm" onClick={handleAddField}>
-            <IconPlus size={13} /> Add Col
-          </button>
-          <button type="button" className="btn btn-sm btn-primary" onClick={handleAddRow}>
-            <IconPlus size={13} /> Add Row
-          </button>
-        </div>
-      </div>
-
       {/* Main Workspace Body */}
       <div className="workspace-body">
         {workspaceMode === 'grid' ? (
           <>
-            {/* Left / Center Data Grid */}
+            {/* Full-Width Spreadsheet Stage */}
             <main className="primary-stage">
-              {/* Active Cell / Formula Bar */}
+              {/* Single Clean Excel Formula & Action Bar */}
               <div className="formula-bar">
-                <span className="cell-coord-badge">
-                  {activeCellInfo ? activeCellInfo.coord : '—'}
+                <span className="cell-coord-badge" title="Selected cell address">
+                  {activeCellInfo ? activeCellInfo.coord : 'A1'}
                 </span>
+
                 {activeCellInfo ? (
                   <>
-                    <FieldTypeGlyph type={activeCellInfo.field.type} />
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '11.5px',
-                        color: 'var(--text-muted)',
-                      }}
-                    >
-                      {activeCellInfo.field.key}
-                    </span>
-                    <div className="divider-vertical" />
                     {activeCellInfo.field.type === 'formula' ? (
                       <input
                         type="text"
                         className="formula-bar-input"
                         value={activeCellInfo.field.formulaExpression || ''}
-                        placeholder="Enter column formula, e.g. {unit_cost} * {stock_qty}"
+                        placeholder="Enter formula, e.g. {col_a} * {col_b}"
                         onChange={(e) =>
                           updateFieldConfig(activeCellInfo.field.id, {
                             formulaExpression: e.target.value,
@@ -1023,7 +838,7 @@ export function App() {
                         type="text"
                         className="formula-bar-input"
                         value={String(activeCellInfo.rawValue ?? '')}
-                        placeholder={`Edit value for ${activeCellInfo.field.label}...`}
+                        placeholder={`Type value for ${activeCellInfo.coord} (${activeCellInfo.field.label})...`}
                         onChange={(e) =>
                           updateCellValue(
                             activeCellInfo.row.id,
@@ -1034,113 +849,152 @@ export function App() {
                       />
                     )}
                     {activeCellInfo.err && (
-                      <span className="status-pill invalid" style={{ textTransform: 'none' }}>
-                        <IconWarning size={11} /> {activeCellInfo.err.message}
+                      <span className="status-pill invalid">
+                        <IconWarning size={13} /> {activeCellInfo.err.message}
                       </span>
                     )}
-                    {!isHeaderlessSheet && (
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => handleHeaderRowChange(-1)}
-                        title="Treat this sheet as having no headers (use A, B, C... and restore header row as data)"
-                      >
-                        Clear Header (Use A, B, C)
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handlePromoteDataRowToHeader(activeCellInfo.row.id)}
-                      title="Use this row's values as the column headers for this sheet"
-                    >
-                      Set Row {activeCellInfo.displayRowNum} as Header
-                    </button>
                   </>
                 ) : (
-                  <span className="formula-hint">Select any cell or column header to inspect</span>
+                  <span className="formula-hint">Click any cell to edit its value</span>
                 )}
+
+                {/* Right-side simple sheet controls */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                  <div className="search-box">
+                    <IconSearch size={14} />
+                    <input
+                      type="text"
+                      placeholder="Search in sheet..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Header Row Simple Selector */}
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      height: '34px',
+                      padding: '0 10px',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-hairline)',
+                      borderRadius: '6px',
+                      fontSize: '13.5px',
+                      color: 'var(--text-body)',
+                    }}
+                    title="Choose if this sheet has a header row or uses A, B, C..."
+                  >
+                    <span>Header:</span>
+                    <select
+                      value={activeSheet.headerRowIndex}
+                      onChange={(e) => handleHeaderRowChange(Number(e.target.value))}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        fontSize: '13.5px',
+                        fontWeight: 600,
+                        color: 'var(--text-primary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <option value={-1}>No Header (Use A, B, C)</option>
+                      {(activeSheet.rawMatrix || []).slice(0, 10).map((r, idx) => {
+                        const preview = r
+                          .filter((c) => String(c ?? '').trim() !== '')
+                          .slice(0, 2)
+                          .join(', ');
+                        return (
+                          <option key={idx} value={idx}>
+                            Row {idx + 1} {preview ? `(${preview.slice(0, 18)})` : ''}
+                          </option>
+                        );
+                      })}
+                      {!activeSheet.rawMatrix && <option value={0}>Row 1</option>}
+                    </select>
+                  </div>
+
+                  <button type="button" className="btn btn-sm" onClick={handleAddRow}>
+                    <IconPlus size={14} /> Add Row
+                  </button>
+                  <button type="button" className="btn btn-sm" onClick={handleAddField}>
+                    <IconPlus size={14} /> Add Column
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${isInspectorOpen ? 'btn-primary' : ''}`}
+                    onClick={() => setIsInspectorOpen((prev) => !prev)}
+                    title="Open or close settings for the selected column"
+                  >
+                    <IconSliders size={14} />
+                    {isInspectorOpen ? 'Hide Column Settings' : 'Column Settings'}
+                  </button>
+                </div>
               </div>
 
               {/* Scrollable Multi-Sheet Grid */}
               <div className="grid-scroll-container">
                 <table className="sheet-table">
                   <thead>
-                    <tr>
-                      <th className="th-row-index">#</th>
+                    {/* Classic Excel Row 1: Column Alphabet Letters (A, B, C, D...) */}
+                    <tr className="excel-letter-row">
+                      <th className="th-row-index" />
                       {visibleFields.map((field, colIdx) => {
                         const isSelectedCol = field.id === selectedFieldId;
                         const colLetter = field.columnLetter || getExcelColumnLetter(colIdx);
-                        const isJustAlphabet = field.label === colLetter;
                         return (
                           <th
-                            key={field.id}
+                            key={`letter_${field.id}`}
                             style={{ width: field.width, minWidth: field.width }}
-                            className={isSelectedCol ? 'selected-column' : ''}
+                            className={isSelectedCol ? 'selected-column-letter' : ''}
                             onClick={() => setSelectedFieldId(field.id)}
+                            onDoubleClick={() => {
+                              setSelectedFieldId(field.id);
+                              setIsInspectorOpen(true);
+                            }}
+                            title="Click to select column, double-click to configure column settings"
                           >
-                            <div className="th-header-content">
-                              <div className="th-top-line">
-                                <div className="th-label-group">
-                                  {!isJustAlphabet && (
-                                    <span
-                                      style={{
-                                        fontFamily: 'var(--font-mono)',
-                                        fontSize: '10px',
-                                        color: 'var(--text-muted)',
-                                      }}
-                                    >
-                                      {colLetter}
-                                    </span>
-                                  )}
-                                  <FieldTypeGlyph type={field.type} />
-                                  <span
-                                    className="th-label"
-                                    style={
-                                      isJustAlphabet
-                                        ? { fontFamily: 'var(--font-mono)', fontSize: '13px' }
-                                        : undefined
-                                    }
-                                  >
-                                    {field.label}
-                                  </span>
-                                  {field.validation.required && (
-                                    <span className="req-dot" title="Required field">
-                                      *
-                                    </span>
-                                  )}
-                                </div>
-                                {!field.visible && (
-                                  <span
-                                    style={{
-                                      fontSize: '10px',
-                                      color: 'var(--text-muted)',
-                                      fontFamily: 'var(--font-mono)',
-                                    }}
-                                  >
-                                    HIDDEN
-                                  </span>
-                                )}
-                              </div>
-                              <div className="th-key-subtitle">
-                                {field.key}
-                                {field.type === 'lookup' && field.lookup && (
-                                  <span>
-                                    {' '}
-                                    →{' '}
-                                    {project.sheets.find((s) => s.id === field.lookup?.targetSheetId)
-                                      ?.name || 'Sheet'}
-                                  </span>
-                                )}
-                                {field.type === 'formula' && field.formulaExpression && (
-                                  <span> = {field.formulaExpression}</span>
-                                )}
-                              </div>
-                            </div>
+                            {colLetter}
                           </th>
                         );
                       })}
                     </tr>
+
+                    {/* Row 2: Clean Human-Readable Column Names (only shown when sheet has headers or custom column names) */}
+                    {!isHeaderlessSheet && (
+                      <tr className="column-title-row">
+                        <th className="th-row-index">#</th>
+                        {visibleFields.map((field) => {
+                          const isSelectedCol = field.id === selectedFieldId;
+                          return (
+                            <th
+                              key={field.id}
+                              style={{ width: field.width, minWidth: field.width }}
+                              className={isSelectedCol ? 'selected-column' : ''}
+                              onClick={() => setSelectedFieldId(field.id)}
+                              onDoubleClick={() => {
+                                setSelectedFieldId(field.id);
+                                setIsInspectorOpen(true);
+                              }}
+                              title="Double-click to open Column Settings"
+                            >
+                              <div className="th-header-single-line">
+                                <div className="th-label-group">
+                                  <span className="th-label">{field.label}</span>
+                                  {field.validation.required && (
+                                    <span className="req-dot" title="Required column">
+                                      *
+                                    </span>
+                                  )}
+                                </div>
+                                <FieldTypeGlyph type={field.type} />
+                              </div>
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    )}
                   </thead>
                   <tbody>
                     {filteredRows.map((row, rowIndex) => {
@@ -1153,10 +1007,10 @@ export function App() {
                               <button
                                 type="button"
                                 className="row-delete-btn"
-                                title="Delete row"
+                                title="Delete this row"
                                 onClick={() => handleDeleteRow(row.id)}
                               >
-                                <IconTrash size={12} />
+                                <IconTrash size={13} />
                               </button>
                             </div>
                           </td>
@@ -1233,7 +1087,7 @@ export function App() {
                                       }}
                                       onBlur={() => setEditingCell(null)}
                                     >
-                                      <option value="">— Select Foreign Key —</option>
+                                      <option value="">— Select Linked Value —</option>
                                       {lookupChoices.map((item) => (
                                         <option key={item.keyVal} value={item.keyVal}>
                                           {item.keyVal}
@@ -1256,8 +1110,8 @@ export function App() {
                                       }}
                                       onBlur={() => setEditingCell(null)}
                                     >
-                                      <option value="true">True</option>
-                                      <option value="false">False</option>
+                                      <option value="true">Yes / True</option>
+                                      <option value="false">No / False</option>
                                     </select>
                                   ) : (
                                     <input
@@ -1301,7 +1155,7 @@ export function App() {
                                     title={
                                       cellError
                                         ? cellError.message
-                                        : 'Double-click to edit cell value'
+                                        : 'Double-click to edit cell'
                                     }
                                   >
                                     {field.type === 'select' && formatted ? (
@@ -1316,7 +1170,7 @@ export function App() {
                                         }}
                                       >
                                         <span className="cell-lookup-chip">
-                                          <IconLink size={11} />
+                                          <IconLink size={12} />
                                           {formatted}
                                         </span>
                                         {matchedLookup?.displayVal && (
@@ -1335,7 +1189,12 @@ export function App() {
                                         onChange={(e) =>
                                           updateCellValue(row.id, field.id, e.target.checked)
                                         }
-                                        style={{ cursor: 'pointer', accentColor: '#111111' }}
+                                        style={{
+                                          cursor: 'pointer',
+                                          accentColor: '#111111',
+                                          width: '16px',
+                                          height: '16px',
+                                        }}
                                       />
                                     ) : (
                                       <span
@@ -1354,7 +1213,7 @@ export function App() {
                                         className="cell-error-indicator"
                                         title={cellError.message}
                                       >
-                                        <IconWarning size={13} />
+                                        <IconWarning size={15} />
                                       </span>
                                     )}
                                   </div>
@@ -1370,13 +1229,13 @@ export function App() {
               </div>
             </main>
 
-            {/* Right Field Configuration Inspector Sidebar */}
-            {selectedField && (
-              <aside className="field-inspector" aria-label="Field Configuration Inspector">
+            {/* Collapsible Right Column Settings Drawer (Only shown when user clicks "Column Settings") */}
+            {isInspectorOpen && selectedField && (
+              <aside className="field-inspector" aria-label="Column Settings">
                 <div className="inspector-header">
                   <div>
                     <div className="section-heading">
-                      Field Configuration • Col {selectedField.columnLetter || '—'}
+                      Column {selectedField.columnLetter || '—'} Settings
                     </div>
                     <h2 className="inspector-title">
                       {selectedField.label === selectedField.columnLetter
@@ -1384,32 +1243,19 @@ export function App() {
                         : selectedField.label}
                     </h2>
                   </div>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => handleMoveField(selectedField.id, -1)}
-                      title="Move column left"
-                    >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => handleMoveField(selectedField.id, 1)}
-                      title="Move column right"
-                    >
-                      →
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setIsInspectorOpen(false)}
+                  >
+                    Close
+                  </button>
                 </div>
 
-                {/* Section 1: Mapping & Identity */}
+                {/* Essential Settings in Plain Language */}
                 <div className="inspector-section">
-                  <div className="section-heading">Identity & Header Mapping</div>
-
                   <div className="form-field">
-                    <label className="form-label">Display Label (Column Header)</label>
+                    <label className="form-label">Column Name</label>
                     <input
                       type="text"
                       className="input-control"
@@ -1423,82 +1269,7 @@ export function App() {
                   </div>
 
                   <div className="form-field">
-                    <label className="form-label">
-                      <span>Machine / Schema Key</span>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        style={{ height: '20px', padding: '0 6px', fontSize: '11px' }}
-                        onClick={() =>
-                          updateFieldConfig(selectedField.id, {
-                            key: toMachineKey(selectedField.label),
-                          })
-                        }
-                      >
-                        Auto-slug
-                      </button>
-                    </label>
-                    <input
-                      type="text"
-                      className="input-control mono"
-                      value={selectedField.key}
-                      onChange={(e) =>
-                        updateFieldConfig(selectedField.id, { key: e.target.value })
-                      }
-                    />
-                    <span className="form-hint">
-                      {isHeaderlessSheet ? (
-                        <>
-                          Sheet has no header row — using Excel column{' '}
-                          <code>{selectedField.columnLetter}</code>
-                        </>
-                      ) : (
-                        <>
-                          Original .xlsx cell:{' '}
-                          <code>
-                            {selectedField.columnLetter || ''}
-                            {activeSheet.headerRowIndex + 1} = {selectedField.sourceHeader}
-                          </code>
-                        </>
-                      )}
-                    </span>
-                  </div>
-
-                  <div className="form-row-2">
-                    <label className="checkbox-row">
-                      <span>Visible in Grid</span>
-                      <input
-                        type="checkbox"
-                        checked={selectedField.visible}
-                        onChange={(e) =>
-                          updateFieldConfig(selectedField.id, { visible: e.target.checked })
-                        }
-                      />
-                    </label>
-                    <div className="form-field">
-                      <input
-                        type="number"
-                        className="input-control mono"
-                        min={90}
-                        max={420}
-                        value={selectedField.width}
-                        onChange={(e) =>
-                          updateFieldConfig(selectedField.id, {
-                            width: Number(e.target.value) || 140,
-                          })
-                        }
-                        title="Column width in pixels"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Section 2: Data Type & Type-Specific Rules */}
-                <div className="inspector-section">
-                  <div className="section-heading">Data Type & Formatting</div>
-
-                  <div className="form-field">
-                    <label className="form-label">Data Type</label>
+                    <label className="form-label">Column Data Type</label>
                     <select
                       className="select-control"
                       value={selectedField.type}
@@ -1518,20 +1289,20 @@ export function App() {
                         updateFieldConfig(selectedField.id, patch);
                       }}
                     >
-                      <option value="text">Text (String)</option>
-                      <option value="number">Number (Integer / Decimal / Currency)</option>
-                      <option value="date">Date (YYYY-MM-DD)</option>
-                      <option value="select">Select / Enum (Allowed Options)</option>
-                      <option value="boolean">Boolean (True / False)</option>
-                      <option value="formula">Computed Formula (fx)</option>
-                      <option value="lookup">Cross-Sheet Lookup (Foreign Key)</option>
+                      <option value="text">Text</option>
+                      <option value="number">Number / Currency</option>
+                      <option value="date">Date</option>
+                      <option value="select">Dropdown List (Options)</option>
+                      <option value="boolean">Checkbox (Yes / No)</option>
+                      <option value="formula">Formula Calculation</option>
+                      <option value="lookup">Link to Another Sheet</option>
                     </select>
                   </div>
 
                   {(selectedField.type === 'number' || selectedField.type === 'formula') && (
                     <div className="form-row-2">
                       <div className="form-field">
-                        <label className="form-label">Number Format</label>
+                        <label className="form-label">Number Style</label>
                         <select
                           className="select-control"
                           value={selectedField.numberFormat || 'raw'}
@@ -1541,15 +1312,15 @@ export function App() {
                             })
                           }
                         >
-                          <option value="raw">Raw Number</option>
-                          <option value="integer">Integer (1,000)</option>
-                          <option value="decimal">Decimal (1,000.00)</option>
+                          <option value="raw">Plain Number</option>
+                          <option value="integer">Whole Number (1,000)</option>
+                          <option value="decimal">Two Decimals (1,000.00)</option>
                           <option value="currency">Currency ($1,000.00)</option>
-                          <option value="percent">Percentage (10.0%)</option>
+                          <option value="percent">Percent (10.0%)</option>
                         </select>
                       </div>
                       <div className="form-field">
-                        <label className="form-label">Currency Symbol</label>
+                        <label className="form-label">Symbol</label>
                         <input
                           type="text"
                           className="input-control mono"
@@ -1566,9 +1337,9 @@ export function App() {
 
                   {selectedField.type === 'select' && (
                     <div className="form-field">
-                      <label className="form-label">Allowed Options (comma-separated)</label>
+                      <label className="form-label">Dropdown Choices (comma-separated)</label>
                       <textarea
-                        className="textarea-control mono"
+                        className="textarea-control"
                         value={(selectedField.selectOptions || []).join(', ')}
                         onChange={(e) =>
                           updateFieldConfig(selectedField.id, {
@@ -1579,19 +1350,16 @@ export function App() {
                           })
                         }
                       />
-                      <span className="form-hint">
-                        Cells with values outside this list will be flagged.
-                      </span>
                     </div>
                   )}
 
                   {selectedField.type === 'formula' && (
                     <div className="form-field">
-                      <label className="form-label">Formula Expression</label>
+                      <label className="form-label">Formula</label>
                       <input
                         type="text"
                         className="input-control mono"
-                        placeholder="{unit_cost} * {stock_qty}"
+                        placeholder="e.g. {col_a} * {col_b}"
                         value={selectedField.formulaExpression || ''}
                         onChange={(e) =>
                           updateFieldConfig(selectedField.id, {
@@ -1599,21 +1367,13 @@ export function App() {
                           })
                         }
                       />
-                      <span className="form-hint">
-                        Reference sibling columns by machine key in curly braces:{' '}
-                        {activeSheet.fields
-                          .filter((f) => f.id !== selectedField.id)
-                          .slice(0, 4)
-                          .map((f) => `{${f.key}}`)
-                          .join(', ')}
-                      </span>
                     </div>
                   )}
 
                   {selectedField.type === 'lookup' && (
                     <>
                       <div className="form-field">
-                        <label className="form-label">Target Sheet</label>
+                        <label className="form-label">Link to Sheet</label>
                         <select
                           className="select-control"
                           value={selectedField.lookup?.targetSheetId || ''}
@@ -1648,7 +1408,7 @@ export function App() {
                         return (
                           <div className="form-row-2">
                             <div className="form-field">
-                              <label className="form-label">Key Column</label>
+                              <label className="form-label">Match Column</label>
                               <select
                                 className="select-control"
                                 value={selectedField.lookup?.targetFieldId || ''}
@@ -1663,13 +1423,13 @@ export function App() {
                               >
                                 {targetSheet.fields.map((tf) => (
                                   <option key={tf.id} value={tf.id}>
-                                    {tf.label} ({tf.key})
+                                    {tf.label}
                                   </option>
                                 ))}
                               </select>
                             </div>
                             <div className="form-field">
-                              <label className="form-label">Preview Label</label>
+                              <label className="form-label">Display Column</label>
                               <select
                                 className="select-control"
                                 value={selectedField.lookup?.displayFieldId || ''}
@@ -1694,24 +1454,11 @@ export function App() {
                       })()}
                     </>
                   )}
-
-                  <div className="form-field">
-                    <label className="form-label">Default Value for New Rows</label>
-                    <input
-                      type="text"
-                      className="input-control mono"
-                      placeholder="Empty"
-                      value={selectedField.defaultValue}
-                      onChange={(e) =>
-                        updateFieldConfig(selectedField.id, { defaultValue: e.target.value })
-                      }
-                    />
-                  </div>
                 </div>
 
-                {/* Section 3: Validation Constraints */}
+                {/* Simple Validation Checkboxes */}
                 <div className="inspector-section">
-                  <div className="section-heading">Validation Rules</div>
+                  <div className="section-heading">Data Rules</div>
 
                   <div className="form-row-2">
                     <label className="checkbox-row">
@@ -1730,7 +1477,7 @@ export function App() {
                       />
                     </label>
                     <label className="checkbox-row">
-                      <span>Unique</span>
+                      <span>No Duplicates</span>
                       <input
                         type="checkbox"
                         checked={Boolean(selectedField.validation.unique)}
@@ -1749,11 +1496,11 @@ export function App() {
                   {selectedField.type === 'number' && (
                     <div className="form-row-2">
                       <div className="form-field">
-                        <label className="form-label">Min Value</label>
+                        <label className="form-label">Minimum</label>
                         <input
                           type="number"
                           className="input-control mono"
-                          placeholder="None"
+                          placeholder="No min"
                           value={selectedField.validation.min ?? ''}
                           onChange={(e) =>
                             updateFieldConfig(selectedField.id, {
@@ -1767,11 +1514,11 @@ export function App() {
                         />
                       </div>
                       <div className="form-field">
-                        <label className="form-label">Max Value</label>
+                        <label className="form-label">Maximum</label>
                         <input
                           type="number"
                           className="input-control mono"
-                          placeholder="None"
+                          placeholder="No max"
                           value={selectedField.validation.max ?? ''}
                           onChange={(e) =>
                             updateFieldConfig(selectedField.id, {
@@ -1787,143 +1534,127 @@ export function App() {
                     </div>
                   )}
 
-                  {selectedField.type === 'text' && (
-                    <div className="form-field">
-                      <label className="form-label">Regex Pattern Match</label>
-                      <input
-                        type="text"
-                        className="input-control mono"
-                        placeholder="e.g. ^[A-Z]{3}-\d{4}$"
-                        value={selectedField.validation.regex || ''}
-                        onChange={(e) =>
-                          updateFieldConfig(selectedField.id, {
-                            validation: {
-                              ...selectedField.validation,
-                              regex: e.target.value || undefined,
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Section 4: Notes & Delete */}
-                <div className="inspector-section" style={{ borderBottom: 'none' }}>
                   <div className="form-field">
-                    <label className="form-label">Field Documentation Note</label>
+                    <label className="form-label">Default Value for New Rows</label>
                     <input
                       type="text"
                       className="input-control"
-                      placeholder="Describe business rules for this column..."
-                      value={selectedField.description || ''}
+                      placeholder="Blank"
+                      value={selectedField.defaultValue}
                       onChange={(e) =>
-                        updateFieldConfig(selectedField.id, { description: e.target.value })
+                        updateFieldConfig(selectedField.id, { defaultValue: e.target.value })
                       }
                     />
+                  </div>
+                </div>
+
+                {/* Column Position & Visibility */}
+                <div className="inspector-section" style={{ borderBottom: 'none' }}>
+                  <div className="section-heading">Column Layout</div>
+                  <div className="form-row-2">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => handleMoveField(selectedField.id, -1)}
+                    >
+                      ← Move Left
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => handleMoveField(selectedField.id, 1)}
+                    >
+                      Move Right →
+                    </button>
+                  </div>
+
+                  <div className="form-row-2">
+                    <label className="checkbox-row">
+                      <span>Show Column</span>
+                      <input
+                        type="checkbox"
+                        checked={selectedField.visible}
+                        onChange={(e) =>
+                          updateFieldConfig(selectedField.id, { visible: e.target.checked })
+                        }
+                      />
+                    </label>
+                    <div className="form-field">
+                      <input
+                        type="number"
+                        className="input-control mono"
+                        min={100}
+                        max={450}
+                        value={selectedField.width}
+                        onChange={(e) =>
+                          updateFieldConfig(selectedField.id, {
+                            width: Number(e.target.value) || 160,
+                          })
+                        }
+                        title="Column width in pixels"
+                      />
+                    </div>
                   </div>
 
                   <button
                     type="button"
                     className="btn btn-danger"
-                    style={{ marginTop: '6px' }}
+                    style={{ marginTop: '8px' }}
                     disabled={activeSheet.fields.length <= 1}
                     onClick={() => handleDeleteField(selectedField.id)}
                   >
-                    <IconTrash size={13} /> Delete Column from Sheet
+                    <IconTrash size={14} /> Delete Column
                   </button>
                 </div>
               </aside>
             )}
           </>
         ) : (
-          /* Dedicated Full-Screen Fields Configuration Matrix View */
+          /* All Column Settings View */
           <main className="schema-view-container">
             <div className="schema-view-inner">
               <div className="schema-hero-card">
                 <div>
-                  <div className="section-heading">
-                    Worksheet Schema & Mapping •{' '}
-                    {isHeaderlessSheet
-                      ? 'No Header Row (Columns A, B, C...)'
-                      : `Header Row ${activeSheet.headerRowIndex + 1}`}
-                  </div>
-                  <h1 className="schema-hero-title">
-                    {activeSheet.name}{' '}
-                    {activeSheet.hiddenState ? (
-                      <span className="status-pill warn" style={{ verticalAlign: 'middle' }}>
-                        Hidden Sheet
-                      </span>
-                    ) : null}
-                  </h1>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '13.5px' }}>
-                    {activeSheet.description ||
-                      'Configure field data types, machine export keys, cross-sheet foreign keys, and validation constraints.'}
+                  <div className="section-heading">Sheet Column Settings</div>
+                  <h1 className="schema-hero-title">{activeSheet.name}</h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '15px' }}>
+                    Configure column names, data types, dropdown lists, and rules for this sheet.
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                   <button
                     type="button"
                     className="btn"
-                    onClick={() => exportSchemaAsJson(project)}
+                    onClick={() => setShowHiddenColumns((prev) => !prev)}
                   >
-                    Export Schema JSON
+                    <IconEye visible={showHiddenColumns} size={15} />
+                    {showHiddenColumns ? 'Showing Hidden Columns' : 'Show Hidden Columns'}
                   </button>
                   <button type="button" className="btn" onClick={handleAddField}>
-                    <IconPlus size={14} /> Add Field Column
+                    <IconPlus size={15} /> Add Column
                   </button>
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={() => setWorkspaceMode('grid')}
                   >
-                    <IconTable size={14} /> Return to Data Grid
+                    <IconTable size={15} /> Back to Spreadsheet
                   </button>
                 </div>
               </div>
 
-              {/* Bento Summary Metrics */}
-              <div className="schema-bento-stats">
-                <div className="stat-card">
-                  <div className="stat-label">Configured Fields</div>
-                  <div className="stat-value">{activeSheet.fields.length}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">Header Mode</div>
-                  <div className="stat-value" style={{ fontSize: '17px', paddingTop: '4px' }}>
-                    {isHeaderlessSheet ? 'Alphabet (A, B, C)' : `Row ${activeSheet.headerRowIndex + 1}`}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">Required Constraints</div>
-                  <div className="stat-value">
-                    {activeSheet.fields.filter((f) => f.validation.required).length}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">Validation Health</div>
-                  <div className="stat-value">
-                    {Object.keys(activeSheetErrors).length === 0
-                      ? '100%'
-                      : `${Object.keys(activeSheetErrors).length} errs`}
-                  </div>
-                </div>
-              </div>
-
-              {/* Full Schema Table */}
               <div className="schema-table-card">
                 <table className="schema-config-table">
                   <thead>
                     <tr>
-                      <th style={{ width: '48px' }}>Vis</th>
-                      <th style={{ width: '52px' }}>Col</th>
-                      <th style={{ width: '190px' }}>Display Label</th>
-                      <th style={{ width: '170px' }}>Machine Key</th>
-                      <th style={{ width: '150px' }}>Data Type</th>
-                      <th>Type Parameters / Lookup / Formula</th>
-                      <th style={{ width: '125px' }}>Default</th>
-                      <th style={{ width: '140px' }}>Rules</th>
-                      <th style={{ width: '60px' }} />
+                      <th style={{ width: '64px' }}>Show</th>
+                      <th style={{ width: '64px' }}>Col</th>
+                      <th style={{ width: '240px' }}>Column Name</th>
+                      <th style={{ width: '200px' }}>Data Type</th>
+                      <th>Options / Formula / Linked Sheet</th>
+                      <th style={{ width: '150px' }}>Default Value</th>
+                      <th style={{ width: '160px' }}>Rules</th>
+                      <th style={{ width: '64px' }} />
                     </tr>
                   </thead>
                   <tbody>
@@ -1940,15 +1671,16 @@ export function App() {
                             onClick={() =>
                               updateFieldConfig(field.id, { visible: !field.visible })
                             }
-                            title={field.visible ? 'Visible in grid' : 'Hidden in grid'}
+                            title={field.visible ? 'Visible in sheet' : 'Hidden in sheet'}
                           >
-                            <IconEye visible={field.visible} size={14} />
+                            <IconEye visible={field.visible} size={15} />
                           </button>
                         </td>
                         <td
                           style={{
                             fontFamily: 'var(--font-mono)',
-                            fontSize: '12px',
+                            fontSize: '14px',
+                            fontWeight: 600,
                             color: 'var(--text-muted)',
                           }}
                         >
@@ -1960,17 +1692,10 @@ export function App() {
                             className="input-control"
                             value={field.label}
                             onChange={(e) =>
-                              updateFieldConfig(field.id, { label: e.target.value })
-                            }
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="text"
-                            className="input-control mono"
-                            value={field.key}
-                            onChange={(e) =>
-                              updateFieldConfig(field.id, { key: e.target.value })
+                              updateFieldConfig(field.id, {
+                                label: e.target.value,
+                                key: toMachineKey(e.target.value),
+                              })
                             }
                           />
                         </td>
@@ -1985,20 +1710,20 @@ export function App() {
                             }
                           >
                             <option value="text">Text</option>
-                            <option value="number">Number</option>
+                            <option value="number">Number / Currency</option>
                             <option value="date">Date</option>
-                            <option value="select">Select / Enum</option>
-                            <option value="boolean">Boolean</option>
-                            <option value="formula">Formula (fx)</option>
-                            <option value="lookup">Lookup (Ref)</option>
+                            <option value="select">Dropdown List</option>
+                            <option value="boolean">Checkbox (Yes/No)</option>
+                            <option value="formula">Formula</option>
+                            <option value="lookup">Link to Sheet</option>
                           </select>
                         </td>
                         <td>
                           {field.type === 'select' && (
                             <input
                               type="text"
-                              className="input-control mono"
-                              placeholder="Opt1, Opt2, Opt3"
+                              className="input-control"
+                              placeholder="Option 1, Option 2, Option 3"
                               value={(field.selectOptions || []).join(', ')}
                               onChange={(e) =>
                                 updateFieldConfig(field.id, {
@@ -2033,15 +1758,15 @@ export function App() {
                                 })
                               }
                             >
-                              <option value="raw">Raw Number</option>
-                              <option value="integer">Integer (1,000)</option>
-                              <option value="decimal">Decimal (1,000.00)</option>
+                              <option value="raw">Plain Number</option>
+                              <option value="integer">Whole Number (1,000)</option>
+                              <option value="decimal">Two Decimals (1,000.00)</option>
                               <option value="currency">Currency ($1,000.00)</option>
                               <option value="percent">Percent (10.0%)</option>
                             </select>
                           )}
                           {field.type === 'lookup' && (
-                            <div style={{ display: 'flex', gap: '6px' }}>
+                            <div style={{ display: 'flex', gap: '8px' }}>
                               <select
                                 className="select-control"
                                 value={field.lookup?.targetSheetId || ''}
@@ -2086,7 +1811,7 @@ export function App() {
                                   )?.fields || []
                                 ).map((tf) => (
                                   <option key={tf.id} value={tf.id}>
-                                    Key: {tf.key}
+                                    Column: {tf.label}
                                   </option>
                                 ))}
                               </select>
@@ -2095,16 +1820,14 @@ export function App() {
                           {(field.type === 'text' ||
                             field.type === 'date' ||
                             field.type === 'boolean') && (
-                            <span className="form-hint">
-                              Source: <code>{field.sourceHeader}</code>
-                            </span>
+                            <span className="form-hint">Standard {field.type} column</span>
                           )}
                         </td>
                         <td>
                           <input
                             type="text"
-                            className="input-control mono"
-                            placeholder="None"
+                            className="input-control"
+                            placeholder="Blank"
                             value={field.defaultValue}
                             onChange={(e) =>
                               updateFieldConfig(field.id, {
@@ -2114,13 +1837,13 @@ export function App() {
                           />
                         </td>
                         <td>
-                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                             <label
                               style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '4px',
-                                fontSize: '12px',
+                                gap: '5px',
+                                fontSize: '13.5px',
                                 cursor: 'pointer',
                               }}
                             >
@@ -2136,14 +1859,14 @@ export function App() {
                                   })
                                 }
                               />
-                              Req
+                              Required
                             </label>
                             <label
                               style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '4px',
-                                fontSize: '12px',
+                                gap: '5px',
+                                fontSize: '13.5px',
                                 cursor: 'pointer',
                               }}
                             >
@@ -2159,7 +1882,7 @@ export function App() {
                                   })
                                 }
                               />
-                              Uniq
+                              Unique
                             </label>
                           </div>
                         </td>
@@ -2169,9 +1892,9 @@ export function App() {
                             className="btn btn-ghost btn-sm"
                             disabled={activeSheet.fields.length <= 1}
                             onClick={() => handleDeleteField(field.id)}
-                            title="Remove field"
+                            title="Delete column"
                           >
-                            <IconTrash size={13} />
+                            <IconTrash size={15} />
                           </button>
                         </td>
                       </tr>
@@ -2184,36 +1907,87 @@ export function App() {
         )}
       </div>
 
-      {/* Bottom Status Bar */}
-      <footer className="bottom-statusbar">
-        <div className="statusbar-group">
-          <span>
-            Sheet: <strong>{activeSheet.name}</strong>
-            {activeSheet.hiddenState ? ' (Hidden in Excel)' : ''} ({filteredRows.length} of{' '}
-            {activeSheet.rows.length} rows •{' '}
-            {isHeaderlessSheet
-              ? 'No Header Row [A, B, C...]'
-              : `Header at Excel Row ${activeSheet.headerRowIndex + 1}`}
-            )
-          </span>
-          <span>•</span>
-          <span>
-            Visible Columns: {visibleFields.length} / {activeSheet.fields.length}
-          </span>
-          <span>•</span>
-          <span>
-            DB: {dbStatus.connected ? 'PostgreSQL Connected' : 'Local Mode (Set DATABASE_URL)'}
-          </span>
+      {/* Classic Excel Bottom Bar: Sheet Tabs on the Left, Simple Summary on the Right */}
+      <footer className="excel-bottom-bar">
+        <div className="sheet-tabs-bar" role="tablist" aria-label="Worksheet tabs">
+          {displayedSheets.map((sheet) => {
+            const sheetErrCount = Object.keys(sheetErrorsMap[sheet.id] || {}).length;
+            const isActive = sheet.id === activeSheet.id;
+            const isHiddenSheet = Boolean(sheet.hiddenState);
+            return (
+              <button
+                key={sheet.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`sheet-tab ${isActive ? 'active' : ''}`}
+                onClick={() => handleSelectSheet(sheet.id)}
+                style={
+                  isHiddenSheet
+                    ? {
+                        borderStyle: 'dashed',
+                        borderColor: '#956400',
+                      }
+                    : undefined
+                }
+              >
+                {isHiddenSheet && (
+                  <span
+                    className="status-pill warn"
+                    style={{ padding: '1px 6px', fontSize: '11px' }}
+                  >
+                    Hidden
+                  </span>
+                )}
+                <span>{sheet.name}</span>
+                {sheetErrCount > 0 && (
+                  <span
+                    style={{
+                      color: 'var(--pastel-red-fg)',
+                      fontSize: '12.5px',
+                      fontWeight: 700,
+                    }}
+                    title={`${sheetErrCount} cells need attention in this sheet`}
+                  >
+                    ({sheetErrCount})
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          {hiddenSheets.length > 0 && dismissedHiddenNotice && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowHiddenSheets((prev) => !prev)}
+            >
+              <IconEye visible={showHiddenSheets} size={14} />
+              {showHiddenSheets
+                ? `Hide Hidden (${hiddenSheets.length})`
+                : `Show Hidden (${hiddenSheets.length})`}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => newSheetDialogRef.current?.showModal()}
+            title="Add a new worksheet tab"
+          >
+            <IconPlus size={14} /> New Sheet
+          </button>
         </div>
-        <div className="statusbar-group">
+
+        <div className="bottom-right-meta">
           <span>
-            Double-click cell to edit • Press <kbd className="keycap">Enter</kbd> to commit •{' '}
-            <kbd className="keycap">Esc</kbd> to cancel
+            {filteredRows.length} {filteredRows.length === 1 ? 'Row' : 'Rows'} •{' '}
+            {visibleFields.length} {visibleFields.length === 1 ? 'Column' : 'Columns'}
           </span>
+          <span>•</span>
+          <span>Double-click any cell to edit</span>
         </div>
       </footer>
 
-      {/* Modal Dialog: PostgreSQL & Railway Storage Manager */}
+      {/* Modal Dialog: Saved Files in Database */}
       <dialog
         ref={dbDrawerDialogRef}
         closedby="any"
@@ -2221,10 +1995,7 @@ export function App() {
         style={{ maxWidth: '640px' }}
       >
         <div className="dialog-header">
-          <div>
-            <div className="section-heading">Database & Storage</div>
-            <h3 className="dialog-title">PostgreSQL Workbooks & Dynamic Schemas</h3>
-          </div>
+          <h3 className="dialog-title">Saved Excel Workbooks</h3>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -2239,31 +2010,18 @@ export function App() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              padding: '12px 14px',
+              padding: '12px 16px',
               borderRadius: '6px',
               border: '1px solid var(--border-hairline)',
               backgroundColor: 'var(--bg-subtle)',
             }}
           >
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span
-                  className={`status-pill ${dbStatus.connected ? 'valid' : 'warn'}`}
-                >
-                  {dbStatus.connected ? 'PostgreSQL Connected' : 'PostgreSQL Not Connected'}
-                </span>
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '11.5px',
-                    color: 'var(--text-muted)',
-                  }}
-                >
-                  Storage: {dbStatus.storageMode}
-                </span>
-              </div>
+              <span className={`status-pill ${dbStatus.connected ? 'valid' : 'warn'}`}>
+                {dbStatus.connected ? 'Database Connected' : 'Database Offline'}
+              </span>
               {dbStatus.error && (
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px' }}>
                   {dbStatus.error}
                 </div>
               )}
@@ -2274,32 +2032,22 @@ export function App() {
               disabled={!dbStatus.connected || isSavingToDb}
               onClick={handleSaveToPostgres}
             >
-              {isSavingToDb
-                ? 'Saving...'
-                : project.id
-                ? 'Update Current Workbook'
-                : 'Save Current Workbook'}
+              {isSavingToDb ? 'Saving...' : 'Save Current Workbook'}
             </button>
-          </div>
-
-          <div className="section-heading" style={{ marginTop: '4px' }}>
-            Saved Workbooks in PostgreSQL ({savedWorkbooks.length})
           </div>
 
           {savedWorkbooks.length === 0 ? (
             <div
               style={{
-                padding: '24px',
+                padding: '28px',
                 textAlign: 'center',
                 border: '1px dashed var(--border-strong)',
                 borderRadius: '6px',
                 color: 'var(--text-muted)',
-                fontSize: '13px',
+                fontSize: '14.5px',
               }}
             >
-              {dbStatus.connected
-                ? 'No workbooks saved yet. Click "Save Current Workbook" to store all sheets, dynamic field configs, and rows in PostgreSQL.'
-                : 'Add DATABASE_URL to your .env file (or link a Railway PostgreSQL database) and restart yarn dev.'}
+              No saved files yet. Click &ldquo;Save Current Workbook&rdquo; to store your sheets.
             </div>
           ) : (
             <div
@@ -2307,7 +2055,7 @@ export function App() {
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '8px',
-                maxHeight: '280px',
+                maxHeight: '300px',
                 overflowY: 'auto',
               }}
             >
@@ -2320,7 +2068,7 @@ export function App() {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      padding: '10px 14px',
+                      padding: '12px 16px',
                       border: '1px solid var(--border-hairline)',
                       borderRadius: '6px',
                       backgroundColor: isCurrent ? 'var(--bg-selected)' : 'var(--bg-surface)',
@@ -2328,49 +2076,48 @@ export function App() {
                   >
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <strong style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+                        <strong style={{ fontSize: '15px', color: 'var(--text-primary)' }}>
                           {wb.fileName}
                         </strong>
-                        <span className="sheet-tab-count">{wb.sheetCount} sheets</span>
-                        {isCurrent && <span className="status-pill info">Active</span>}
+                        <span className="status-pill info">
+                          {wb.sheetCount} {wb.sheetCount === 1 ? 'sheet' : 'sheets'}
+                        </span>
                       </div>
                       <div
                         style={{
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: '11px',
+                          fontSize: '13px',
                           color: 'var(--text-muted)',
-                          marginTop: '2px',
+                          marginTop: '3px',
                         }}
                       >
-                        ID: {wb.id} • Updated {new Date(wb.lastModified).toLocaleString()}
+                        Last saved: {new Date(wb.lastModified).toLocaleString()}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {wb.storageKey && (
                         <a
                           href={`/api/workbooks/${wb.id}/original-file`}
                           className="btn btn-sm"
                           style={{ textDecoration: 'none' }}
-                          title="Download original uploaded .xlsx binary from storage"
                         >
-                          Original .xlsx
+                          Original File
                         </a>
                       )}
                       <button
                         type="button"
-                        className="btn btn-sm"
+                        className="btn btn-primary btn-sm"
                         disabled={isLoadingFromDb}
                         onClick={() => handleLoadWorkbookFromDb(wb.id)}
                       >
-                        Load
+                        Open
                       </button>
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => handleDeleteWorkbookFromDb(wb.id, wb.fileName)}
-                        title="Delete from PostgreSQL"
+                        title="Delete saved workbook"
                       >
-                        <IconTrash size={13} />
+                        <IconTrash size={14} />
                       </button>
                     </div>
                   </div>
@@ -2380,13 +2127,6 @@ export function App() {
           )}
         </div>
         <div className="dialog-footer">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => exportSchemaAsJson(project)}
-          >
-            Download Schema JSON
-          </button>
           <button
             type="button"
             className="btn btn-primary"
@@ -2400,7 +2140,7 @@ export function App() {
       {/* Modal Dialog: Export XLSX Options */}
       <dialog ref={exportDialogRef} closedby="any" className="editorial-dialog">
         <div className="dialog-header">
-          <h3 className="dialog-title">Export Configured Workbook (.xlsx)</h3>
+          <h3 className="dialog-title">Download Excel File (.xlsx)</h3>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -2410,30 +2150,11 @@ export function App() {
           </button>
         </div>
         <div className="dialog-body">
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            Choose how field mappings, computed formulas, and schema configurations are written to
-            the exported Excel file.
-          </p>
-
-          <label className="checkbox-row">
-            <div>
-              <span>Use Machine Keys as Column Headers</span>
-              <div className="form-hint">
-                Exports snake_case keys (e.g. <code>unit_cost</code>) instead of display labels
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={exportUseMachineKeys}
-              onChange={(e) => setExportUseMachineKeys(e.target.checked)}
-            />
-          </label>
-
           <label className="checkbox-row">
             <div>
               <span>Include Hidden Columns</span>
               <div className="form-hint">
-                Export all {activeSheet.fields.length} columns even if hidden in the grid view
+                Export all {activeSheet.fields.length} columns even if hidden on screen
               </div>
             </div>
             <input
@@ -2446,10 +2167,9 @@ export function App() {
           {hiddenSheets.length > 0 && (
             <label className="checkbox-row">
               <div>
-                <span>Include Hidden Excel Sheets ({hiddenSheets.length})</span>
+                <span>Include Hidden Sheets ({hiddenSheets.length})</span>
                 <div className="form-hint">
-                  Exports hidden worksheets ({hiddenSheets.map((s) => s.name).join(', ')}) preserving
-                  their Hidden state
+                  Keep hidden worksheets ({hiddenSheets.map((s) => s.name).join(', ')}) in the file
                 </div>
               </div>
               <input
@@ -2462,9 +2182,9 @@ export function App() {
 
           <label className="checkbox-row">
             <div>
-              <span>Append &ldquo;_field_configs&rdquo; Metadata Sheet</span>
+              <span>Include Column Settings Summary Sheet</span>
               <div className="form-hint">
-                Includes a dedicated worksheet documenting all field types, lookups, and rules
+                Adds a sheet listing your column types and rules
               </div>
             </div>
             <input
@@ -2495,7 +2215,7 @@ export function App() {
               exportDialogRef.current?.close();
             }}
           >
-            <IconDownload size={14} /> Download .xlsx
+            <IconDownload size={15} /> Download .xlsx
           </button>
         </div>
       </dialog>
@@ -2504,7 +2224,7 @@ export function App() {
       <dialog ref={newSheetDialogRef} closedby="any" className="editorial-dialog">
         <form onSubmit={handleCreateSheet}>
           <div className="dialog-header">
-            <h3 className="dialog-title">Create New Worksheet</h3>
+            <h3 className="dialog-title">Add New Sheet</h3>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -2515,11 +2235,11 @@ export function App() {
           </div>
           <div className="dialog-body">
             <div className="form-field">
-              <label className="form-label">Worksheet Name</label>
+              <label className="form-label">Sheet Name</label>
               <input
                 type="text"
                 className="input-control"
-                placeholder="e.g. Warehouse Locations"
+                placeholder="e.g. Sheet 2"
                 value={newSheetName}
                 onChange={(e) => setNewSheetName(e.target.value)}
                 autoFocus
