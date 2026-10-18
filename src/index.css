@@ -385,6 +385,26 @@ body,
   min-width: 100%;
 }
 
+.sheet-table td {
+  overflow: hidden;
+}
+
+/* Column resize handle (drag on header edge) */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 20;
+}
+
+.col-resize-handle:hover {
+  background-color: var(--text-muted);
+  opacity: 0.4;
+}
+
 .sheet-table th,
 .sheet-table td {
   border-right: 1px solid var(--border-hairline);

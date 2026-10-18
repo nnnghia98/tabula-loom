@@ -9,6 +9,7 @@ import {
   CellValue,
 } from './types';
 import { EMPTY_WORKBOOK } from './sampleData';
+import { loadDraft, saveDraft, clearDraft } from './draftStorage';
 import {
   parseXlsxFile,
   buildSheetFromMatrix,
@@ -37,6 +38,8 @@ import {
 } from './Icons';
 
 type WorkspaceMode = 'grid' | 'schema';
+
+const COL_WIDTHS_STORAGE_KEY = 'tabula-loom:column-widths';
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -139,6 +142,74 @@ export function App() {
     }, 3600);
   };
 
+  // Local draft (IndexedDB): restore unsaved work after a tab close/reload.
+  const [draftState, setDraftState] = useState<'idle' | 'saved'>('idle');
+  const [restoredDraftAt, setRestoredDraftAt] = useState<number | null>(null);
+  const draftReadyRef = useRef(false);
+  const skipNextDraftWriteRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadDraft().then((draft) => {
+      if (cancelled) return;
+      if (draft && draft.project?.sheets?.length > 0) {
+        skipNextDraftWriteRef.current = true;
+        setProject(draft.project);
+        setRawUploadedBase64(draft.rawUploadedBase64);
+        const sheet =
+          draft.project.sheets.find((s) => s.id === draft.activeSheetId) ||
+          draft.project.sheets[0];
+        setActiveSheetId(sheet.id);
+        setSelectedFieldId(sheet.fields[0]?.id || '');
+        setSelectedCell(
+          sheet.rows[0] && sheet.fields[0]
+            ? { rowId: sheet.rows[0].id, fieldId: sheet.fields[0].id }
+            : null
+        );
+        setRestoredDraftAt(draft.savedAt);
+        setDraftState('saved');
+      }
+      draftReadyRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!draftReadyRef.current) return;
+    if (skipNextDraftWriteRef.current) {
+      skipNextDraftWriteRef.current = false;
+      return;
+    }
+    if (project === EMPTY_WORKBOOK) return;
+    const timer = setTimeout(async () => {
+      const ok = await saveDraft({
+        project,
+        rawUploadedBase64,
+        activeSheetId,
+        savedAt: Date.now(),
+      });
+      setDraftState(ok ? 'saved' : 'idle');
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [project, rawUploadedBase64, activeSheetId]);
+
+  const handleDiscardDraft = async () => {
+    await clearDraft();
+    skipNextDraftWriteRef.current = true;
+    setProject(EMPTY_WORKBOOK);
+    setRawUploadedBase64(null);
+    setActiveSheetId(EMPTY_WORKBOOK.sheets[0].id);
+    setSelectedFieldId(EMPTY_WORKBOOK.sheets[0].fields[0].id);
+    setSelectedCell({
+      rowId: EMPTY_WORKBOOK.sheets[0].rows[0].id,
+      fieldId: EMPTY_WORKBOOK.sheets[0].fields[0].id,
+    });
+    setRestoredDraftAt(null);
+    setDraftState('idle');
+  };
+
   const handleSaveToPostgres = async () => {
     setIsSavingToDb(true);
     try {
@@ -158,6 +229,7 @@ export function App() {
         showToast(data.error || 'Could not save workbook');
         return;
       }
+      skipNextDraftWriteRef.current = true;
       setProject((prev) => ({
         ...prev,
         id: data.id,
@@ -165,6 +237,9 @@ export function App() {
         hasOriginalBinary: prev.hasOriginalBinary || Boolean(rawUploadedBase64),
       }));
       setRawUploadedBase64(null);
+      setRestoredDraftAt(null);
+      setDraftState('idle');
+      await clearDraft();
       await fetchBackendStatusAndWorkbooks();
       showToast(`Saved "${project.fileName}"`);
     } catch {
@@ -185,8 +260,12 @@ export function App() {
       }
       const loaded: WorkbookProject = await res.json();
       if (loaded.sheets.length > 0) {
+        skipNextDraftWriteRef.current = true;
         setProject(loaded);
         setRawUploadedBase64(null);
+        setRestoredDraftAt(null);
+        void clearDraft();
+        setDraftState('idle');
         setDismissedHiddenNotice(false);
         const firstVisible = loaded.sheets.find((s) => !s.hiddenState) || loaded.sheets[0];
         setActiveSheetId(firstVisible.id);
@@ -262,6 +341,48 @@ export function App() {
     if (showHiddenColumns) return activeSheet.fields;
     return activeSheet.fields.filter((f) => f.visible);
   }, [activeSheet.fields, showHiddenColumns]);
+
+  // Persisted per-column width overrides (localStorage), keyed by `${sheetId}:${fieldId}`
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COL_WIDTHS_STORAGE_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COL_WIDTHS_STORAGE_KEY, JSON.stringify(colWidths));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [colWidths]);
+
+  const getColWidth = (field: FieldConfig): number =>
+    colWidths[`${activeSheet.id}:${field.id}`] ?? field.width;
+
+  const startColumnResize = (e: React.MouseEvent, field: FieldConfig) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = getColWidth(field);
+    const key = `${activeSheet.id}:${field.id}`;
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.max(60, Math.round(startWidth + ev.clientX - startX));
+      setColWidths((prev) => ({ ...prev, [key]: next }));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const filteredRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -653,9 +774,13 @@ export function App() {
               {totalErrorCount === 1 ? 'cell needs' : 'cells need'} attention
             </span>
           )}
-          {saveToastMessage && (
+          {saveToastMessage ? (
             <span className="status-pill info">{saveToastMessage}</span>
-          )}
+          ) : draftState === 'saved' ? (
+            <span className="status-pill info" title="Unsaved changes are kept in this browser">
+              Draft saved locally
+            </span>
+          ) : null}
         </div>
 
         {/* Center View Switcher */}
@@ -737,16 +862,16 @@ export function App() {
           </button>
           <button
             type="button"
-            className="btn"
+            className="btn btn-primary"
             disabled={isSavingToDb}
             onClick={handleSaveToPostgres}
-            title="Save workbook to database"
+            title="Save your work to the database to continue later"
           >
             {isSavingToDb ? 'Saving...' : 'Save'}
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn"
             onClick={() => exportDialogRef.current?.showModal()}
           >
             <IconDownload size={15} />
@@ -754,6 +879,37 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {/* Restored Local Draft Banner */}
+      {restoredDraftAt && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 20px',
+            backgroundColor: 'var(--pastel-blue-bg)',
+            borderBottom: '1px solid var(--border-hairline)',
+            color: 'var(--pastel-blue-fg)',
+            fontSize: '14px',
+            flexShrink: 0,
+            gap: '12px',
+          }}
+        >
+          <span>
+            Restored your unsaved draft from {new Date(restoredDraftAt).toLocaleString()}. Press
+            Save to keep it.
+          </span>
+          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+            <button type="button" className="btn btn-sm" onClick={handleDiscardDraft}>
+              Discard draft
+            </button>
+            <button type="button" className="btn btn-sm" onClick={() => setRestoredDraftAt(null)}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Hidden Sheets Detection Notice Banner */}
       {hiddenSheets.length > 0 && !dismissedHiddenNotice && (
@@ -935,7 +1091,16 @@ export function App() {
 
               {/* Scrollable Multi-Sheet Grid */}
               <div className="grid-scroll-container">
-                <table className="sheet-table">
+                <table
+                  className="sheet-table"
+                  style={{ width: 56 + visibleFields.reduce((s, f) => s + getColWidth(f), 0) }}
+                >
+                  <colgroup>
+                    <col style={{ width: 56 }} />
+                    {visibleFields.map((f) => (
+                      <col key={f.id} style={{ width: getColWidth(f) }} />
+                    ))}
+                  </colgroup>
                   <thead>
                     {/* Classic Excel Row 1: Column Alphabet Letters (A, B, C, D...) */}
                     <tr className="excel-letter-row">
@@ -946,7 +1111,6 @@ export function App() {
                         return (
                           <th
                             key={`letter_${field.id}`}
-                            style={{ width: field.width, minWidth: field.width }}
                             className={isSelectedCol ? 'selected-column-letter' : ''}
                             onClick={() => setSelectedFieldId(field.id)}
                             onDoubleClick={() => {
@@ -956,6 +1120,13 @@ export function App() {
                             title="Click to select column, double-click to configure column settings"
                           >
                             {colLetter}
+                            <div
+                              className="col-resize-handle"
+                              title="Drag to resize column"
+                              onMouseDown={(e) => startColumnResize(e, field)}
+                              onClick={(e) => e.stopPropagation()}
+                              onDoubleClick={(e) => e.stopPropagation()}
+                            />
                           </th>
                         );
                       })}
@@ -970,7 +1141,6 @@ export function App() {
                           return (
                             <th
                               key={field.id}
-                              style={{ width: field.width, minWidth: field.width }}
                               className={isSelectedCol ? 'selected-column' : ''}
                               onClick={() => setSelectedFieldId(field.id)}
                               onDoubleClick={() => {
@@ -990,6 +1160,13 @@ export function App() {
                                 </div>
                                 <FieldTypeGlyph type={field.type} />
                               </div>
+                              <div
+                                className="col-resize-handle"
+                                title="Drag to resize column"
+                                onMouseDown={(e) => startColumnResize(e, field)}
+                                onClick={(e) => e.stopPropagation()}
+                                onDoubleClick={(e) => e.stopPropagation()}
+                              />
                             </th>
                           );
                         })}
@@ -2026,14 +2203,6 @@ export function App() {
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={!dbStatus.connected || isSavingToDb}
-              onClick={handleSaveToPostgres}
-            >
-              {isSavingToDb ? 'Saving...' : 'Save Current Workbook'}
-            </button>
           </div>
 
           {savedWorkbooks.length === 0 ? (
@@ -2047,7 +2216,7 @@ export function App() {
                 fontSize: '14.5px',
               }}
             >
-              No saved files yet. Click &ldquo;Save Current Workbook&rdquo; to store your sheets.
+              No saved files yet. Use the Save button in the top bar to store your sheets.
             </div>
           ) : (
             <div
