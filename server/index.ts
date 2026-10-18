@@ -20,13 +20,18 @@ app.use(express.json({ limit: '50mb' }));
 let dbReadyState: { connected: boolean; error?: string } = { connected: false };
 
 // Initialize schema on startup
-ensureDatabaseSchema().then((status) => {
+const databaseReady = ensureDatabaseSchema().then((status) => {
   dbReadyState = status;
   if (status.connected) {
     console.log('[Tabula Loom API] PostgreSQL connected and dynamic schema tables verified.');
   } else {
     console.warn('[Tabula Loom API] Running without PostgreSQL connection:', status.error);
   }
+});
+
+app.use('/api', async (_req, _res, next) => {
+  await databaseReady;
+  next();
 });
 
 // 1. Health & Database Status
@@ -313,6 +318,10 @@ if (fs.existsSync(distDir)) {
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Tabula Loom Server] Listening on http://0.0.0.0:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Tabula Loom Server] Listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+export default app;
