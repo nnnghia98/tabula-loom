@@ -1,27 +1,27 @@
 :root {
-  --bg-canvas: #F5F4F0;
+  --bg-canvas: #F7F6F3;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F8F7F4;
-  --bg-excel-header: #F1EFEA;
-  --bg-hover: #ECEAE4;
-  --bg-selected: #EBF4FA;
-  --border-hairline: #DCDAD3;
-  --border-strong: #C2BFB6;
+  --bg-subtle: #FBFBFA;
+  --bg-excel-header: #F2F1EE;
+  --bg-hover: #F2F1EE;
+  --bg-selected: #F0F6FA;
+  --border-hairline: #EAEAEA;
+  --border-strong: #D6D5D0;
 
   --text-primary: #111111;
-  --text-body: #1D2022;
-  --text-muted: #575652;
-  --text-faint: #85837E;
+  --text-body: #2F3437;
+  --text-muted: #787774;
+  --text-faint: #A3A19D;
 
-  /* Muted Spot Pastels with high-contrast foregrounds for readability */
+  /* Muted Spot Pastels */
   --pastel-blue-bg: #E1F3FE;
-  --pastel-blue-fg: #14547E;
-  --pastel-green-bg: #E6F2E5;
-  --pastel-green-fg: #235327;
-  --pastel-yellow-bg: #FBF1D0;
-  --pastel-yellow-fg: #785000;
-  --pastel-red-bg: #FCE6E7;
-  --pastel-red-fg: #8E201E;
+  --pastel-blue-fg: #1F6C9F;
+  --pastel-green-bg: #EDF3EC;
+  --pastel-green-fg: #346538;
+  --pastel-yellow-bg: #FBF3DB;
+  --pastel-yellow-fg: #956400;
+  --pastel-red-bg: #FDEBEC;
+  --pastel-red-fg: #9F2F2D;
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   --font-serif: 'Poppins', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; /* heading font */
@@ -384,7 +384,6 @@ body,
   border-spacing: 0;
   table-layout: fixed;
   background-color: var(--bg-surface);
-  min-width: 100%;
 }
 
 .sheet-table td {
@@ -459,12 +458,12 @@ body,
 }
 
 .th-row-index {
-  width: 56px;
-  min-width: 56px;
-  max-width: 56px;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
   text-align: center !important;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-muted);
   position: sticky;
   left: 0;
@@ -473,12 +472,12 @@ body,
 }
 
 .td-row-index {
-  width: 56px;
-  min-width: 56px;
-  max-width: 56px;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-muted);
   background-color: var(--bg-excel-header);
@@ -1022,4 +1021,19 @@ dialog.editorial-dialog::backdrop {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* Consistent dropdown chevron position */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 12 12%27 fill=%27none%27 stroke=%27%23787774%27 stroke-width=%271.5%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27><path d=%27M2.5 4.5L6 8l3.5-3.5%27/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+
+select.select-control,
+select.cell-inline-select {
+  padding-right: 30px;
 }

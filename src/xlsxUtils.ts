@@ -306,6 +306,19 @@ export function buildSheetFromMatrix(
     const inferred = inferFieldType(colValues, isHeaderless ? '' : finalLabel);
     const fieldId = `${sheetId}_c${colIdx}_${finalKey}`;
 
+    const nonEmptyVals = colValues.filter(
+      (v) => v !== null && v !== undefined && String(v).trim() !== ''
+    );
+    const isSequentialIdCol =
+      colIdx === 0 &&
+      nonEmptyVals.length >= 2 &&
+      nonEmptyVals.every((v, idx) => Number(String(v).trim()) === idx + 1);
+    const isShortIdHeader = /^(stt|no\.?|#|id)$/i.test(rawHeaderStr);
+    const defaultColWidth =
+      isSequentialIdCol || isShortIdHeader
+        ? 64
+        : Math.max(130, Math.min(260, finalLabel.length * 10 + 65));
+
     fields.push({
       id: fieldId,
       key: finalKey,
@@ -316,7 +329,7 @@ export function buildSheetFromMatrix(
       columnLetter: colLetter,
       type: inferred.type,
       visible: true,
-      width: Math.max(130, Math.min(260, finalLabel.length * 10 + 65)),
+      width: defaultColWidth,
       defaultValue: '',
       numberFormat: inferred.numberFormat || 'raw',
       currencySymbol: '$',

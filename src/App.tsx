@@ -100,7 +100,10 @@ export function App() {
   const exportDialogRef = useRef<HTMLDialogElement | null>(null);
   const newSheetDialogRef = useRef<HTMLDialogElement | null>(null);
   const dbDrawerDialogRef = useRef<HTMLDialogElement | null>(null);
+  const addRowDialogRef = useRef<HTMLDialogElement | null>(null);
   const [newSheetName, setNewSheetName] = useState<string>('');
+  const [newRowDraft, setNewRowDraft] = useState<Record<string, CellValue>>({});
+  const [newRowErrors, setNewRowErrors] = useState<Record<string, string>>({});
 
   const fetchBackendStatusAndWorkbooks = useCallback(async () => {
     try {
@@ -359,17 +362,33 @@ export function App() {
     }
   }, [colWidths]);
 
-  const getColWidth = (field: FieldConfig): number =>
-    colWidths[`${activeSheet.id}:${field.id}`] ?? field.width;
+  const isAutoIdField = (field: FieldConfig, colIdx: number): boolean => {
+    if (/^(stt|no\.?|#|id)$/i.test(field.label.trim())) return true;
+    if (colIdx !== 0 || activeSheet.rows.length < 2) return false;
+    const nonEmpty = activeSheet.rows
+      .map((r) => r.cells[field.id])
+      .filter((v) => v !== null && v !== undefined && String(v).trim() !== '');
+    return (
+      nonEmpty.length >= 2 &&
+      nonEmpty.every((v, idx) => Number(String(v).trim()) === idx + 1)
+    );
+  };
 
-  const startColumnResize = (e: React.MouseEvent, field: FieldConfig) => {
+  const getColWidth = (field: FieldConfig, colIdx = 0): number => {
+    const manualWidth = colWidths[`${activeSheet.id}:${field.id}`];
+    if (manualWidth !== undefined) return manualWidth;
+    if (isAutoIdField(field, colIdx)) return 64;
+    return field.width;
+  };
+
+  const startColumnResize = (e: React.MouseEvent, field: FieldConfig, colIdx = 0) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
-    const startWidth = getColWidth(field);
+    const startWidth = getColWidth(field, colIdx);
     const key = `${activeSheet.id}:${field.id}`;
     const onMove = (ev: MouseEvent) => {
-      const next = Math.max(60, Math.round(startWidth + ev.clientX - startX));
+      const next = Math.max(48, Math.round(startWidth + ev.clientX - startX));
       setColWidths((prev) => ({ ...prev, [key]: next }));
     };
     const onUp = () => {
@@ -539,8 +558,7 @@ export function App() {
     }));
   };
 
-  const handleAddRow = () => {
-    const newRowId = `row_${Date.now().toString(36)}`;
+  const buildDefaultRowCells = (): Record<string, CellValue> => {
     const initialCells: Record<string, CellValue> = {};
     activeSheet.fields.forEach((f) => {
       if (f.type === 'boolean') {
@@ -549,6 +567,32 @@ export function App() {
         initialCells[f.id] = Number(f.defaultValue) || 0;
       } else {
         initialCells[f.id] = f.defaultValue || '';
+      }
+    });
+    return initialCells;
+  };
+
+  const handleOpenAddRowModal = () => {
+    setNewRowDraft(buildDefaultRowCells());
+    setNewRowErrors({});
+    addRowDialogRef.current?.showModal();
+  };
+
+  const insertNewRowWithCells = (cellsPayload: Record<string, CellValue>) => {
+    const newRowId = `row_${Date.now().toString(36)}`;
+    const normalizedCells: Record<string, CellValue> = {};
+
+    activeSheet.fields.forEach((f) => {
+      const rawValue = cellsPayload[f.id] ?? '';
+      if (f.type === 'number' && typeof rawValue === 'string' && rawValue.trim() !== '') {
+        const cleaned = rawValue.replace(/[$,%\s]/g, '');
+        const parsedNum = Number(cleaned);
+        normalizedCells[f.id] = Number.isNaN(parsedNum) ? rawValue : parsedNum;
+      } else if (f.type === 'boolean') {
+        normalizedCells[f.id] =
+          rawValue === true || String(rawValue).toLowerCase() === 'true';
+      } else {
+        normalizedCells[f.id] = rawValue;
       }
     });
 
@@ -560,13 +604,55 @@ export function App() {
           id: newRowId,
           excelRowNumber:
             (sheet.rows[sheet.rows.length - 1]?.excelRowNumber || sheet.rows.length) + 1,
-          cells: initialCells,
+          cells: normalizedCells,
         },
       ],
     }));
 
     if (activeSheet.fields[0]) {
       setSelectedCell({ rowId: newRowId, fieldId: activeSheet.fields[0].id });
+    }
+  };
+
+  const handleAddBlankRow = () => {
+    insertNewRowWithCells(buildDefaultRowCells());
+    addRowDialogRef.current?.close();
+  };
+
+  const handleSubmitAddRowForm = (e: React.FormEvent, keepOpen = false) => {
+    e.preventDefault();
+    const tempRowId = '__new_row__';
+    const tempSheet: SheetData = {
+      ...activeSheet,
+      rows: [
+        ...activeSheet.rows,
+        {
+          id: tempRowId,
+          cells: newRowDraft,
+        },
+      ],
+    };
+    const sheetValidation = validateSheet(tempSheet, project.sheets);
+    const rowFieldErrors: Record<string, string> = {};
+    activeSheet.fields.forEach((f) => {
+      const err = sheetValidation[`${tempRowId}:${f.id}`];
+      if (err) {
+        rowFieldErrors[f.id] = err.message;
+      }
+    });
+
+    if (Object.keys(rowFieldErrors).length > 0) {
+      setNewRowErrors(rowFieldErrors);
+      return;
+    }
+
+    insertNewRowWithCells(newRowDraft);
+    if (keepOpen) {
+      setNewRowDraft(buildDefaultRowCells());
+      setNewRowErrors({});
+      showToast(`Added row to "${activeSheet.name}"`);
+    } else {
+      addRowDialogRef.current?.close();
     }
   };
 
@@ -810,27 +896,30 @@ export function App() {
         {/* Right File & Zoom Actions */}
         <div className="top-actions">
           {/* Text Size / Zoom Control for Older Users */}
-          <div
-            className="mode-switcher"
+          <select
+            value={uiScale}
+            onChange={(e) => setUiScale(parseFloat(e.target.value))}
             title="Adjust spreadsheet text and row size"
             aria-label="Text size"
+            style={{
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
+              padding: '5px 28px 5px 10px',
+              fontSize: '13px',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-primary)',
+              backgroundColor: 'var(--bg-surface)',
+              border: '1px solid var(--border-hairline)',
+              borderRadius: '5px',
+              cursor: 'pointer',
+            }}
           >
-            {[
-              { label: '100%', val: 1.0 },
-              { label: '115%', val: 1.15 },
-              { label: '130%', val: 1.3 },
-            ].map((item) => (
-              <button
-                key={item.label}
-                type="button"
-                className={`mode-btn ${uiScale === item.val ? 'active' : ''}`}
-                style={{ padding: '5px 9px', fontSize: '13px' }}
-                onClick={() => setUiScale(item.val)}
-              >
-                {item.label}
-              </button>
+            {[0.7, 0.8, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0].map((v) => (
+              <option key={v} value={v}>
+                {Math.round(v * 100)}%
+              </option>
             ))}
-          </div>
+          </select>
 
           <input
             ref={fileInputRef}
@@ -971,10 +1060,6 @@ export function App() {
             <main className="primary-stage">
               {/* Single Clean Excel Formula & Action Bar */}
               <div className="formula-bar">
-                <span className="cell-coord-badge" title="Selected cell address">
-                  {activeCellInfo ? activeCellInfo.coord : 'A1'}
-                </span>
-
                 {activeCellInfo ? (
                   <>
                     {activeCellInfo.field.type === 'formula' ? (
@@ -994,7 +1079,7 @@ export function App() {
                         type="text"
                         className="formula-bar-input"
                         value={String(activeCellInfo.rawValue ?? '')}
-                        placeholder={`Type value for ${activeCellInfo.coord} (${activeCellInfo.field.label})...`}
+                        placeholder={`Type value for ${activeCellInfo.field.label}...`}
                         onChange={(e) =>
                           updateCellValue(
                             activeCellInfo.row.id,
@@ -1026,52 +1111,7 @@ export function App() {
                     />
                   </div>
 
-                  {/* Header Row Simple Selector */}
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      height: '34px',
-                      padding: '0 10px',
-                      backgroundColor: 'var(--bg-surface)',
-                      border: '1px solid var(--border-hairline)',
-                      borderRadius: '6px',
-                      fontSize: '13.5px',
-                      color: 'var(--text-body)',
-                    }}
-                    title="Choose if this sheet has a header row or uses A, B, C..."
-                  >
-                    <span>Header:</span>
-                    <select
-                      value={activeSheet.headerRowIndex}
-                      onChange={(e) => handleHeaderRowChange(Number(e.target.value))}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        fontSize: '13.5px',
-                        fontWeight: 600,
-                        color: 'var(--text-primary)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <option value={-1}>No Header (Use A, B, C)</option>
-                      {(activeSheet.rawMatrix || []).slice(0, 10).map((r, idx) => {
-                        const preview = r
-                          .filter((c) => String(c ?? '').trim() !== '')
-                          .slice(0, 2)
-                          .join(', ');
-                        return (
-                          <option key={idx} value={idx}>
-                            Row {idx + 1} {preview ? `(${preview.slice(0, 18)})` : ''}
-                          </option>
-                        );
-                      })}
-                      {!activeSheet.rawMatrix && <option value={0}>Row 1</option>}
-                    </select>
-                  </div>
-
-                  <button type="button" className="btn btn-sm" onClick={handleAddRow}>
+                  <button type="button" className="btn btn-sm" onClick={handleOpenAddRowModal}>
                     <IconPlus size={14} /> Add Row
                   </button>
                   <button type="button" className="btn btn-sm" onClick={handleAddField}>
@@ -1093,12 +1133,12 @@ export function App() {
               <div className="grid-scroll-container">
                 <table
                   className="sheet-table"
-                  style={{ width: 56 + visibleFields.reduce((s, f) => s + getColWidth(f), 0) }}
+                  style={{ width: 44 + visibleFields.reduce((s, f, idx) => s + getColWidth(f, idx), 0) }}
                 >
                   <colgroup>
-                    <col style={{ width: 56 }} />
-                    {visibleFields.map((f) => (
-                      <col key={f.id} style={{ width: getColWidth(f) }} />
+                    <col style={{ width: 44 }} />
+                    {visibleFields.map((f, idx) => (
+                      <col key={f.id} style={{ width: getColWidth(f, idx) }} />
                     ))}
                   </colgroup>
                   <thead>
@@ -1123,7 +1163,7 @@ export function App() {
                             <div
                               className="col-resize-handle"
                               title="Drag to resize column"
-                              onMouseDown={(e) => startColumnResize(e, field)}
+                              onMouseDown={(e) => startColumnResize(e, field, colIdx)}
                               onClick={(e) => e.stopPropagation()}
                               onDoubleClick={(e) => e.stopPropagation()}
                             />
@@ -1136,7 +1176,7 @@ export function App() {
                     {!isHeaderlessSheet && (
                       <tr className="column-title-row">
                         <th className="th-row-index">#</th>
-                        {visibleFields.map((field) => {
+                        {visibleFields.map((field, colIdx) => {
                           const isSelectedCol = field.id === selectedFieldId;
                           return (
                             <th
@@ -1163,7 +1203,7 @@ export function App() {
                               <div
                                 className="col-resize-handle"
                                 title="Drag to resize column"
-                                onMouseDown={(e) => startColumnResize(e, field)}
+                                onMouseDown={(e) => startColumnResize(e, field, colIdx)}
                                 onClick={(e) => e.stopPropagation()}
                                 onDoubleClick={(e) => e.stopPropagation()}
                               />
@@ -1798,7 +1838,51 @@ export function App() {
                     Configure column names, data types, dropdown lists, and rules for this sheet.
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      height: '38px',
+                      padding: '0 12px',
+                      backgroundColor: 'var(--bg-subtle)',
+                      border: '1px solid var(--border-hairline)',
+                      borderRadius: '6px',
+                      fontSize: '13.5px',
+                      color: 'var(--text-body)',
+                    }}
+                    title="Choose which Excel row contains the column headers for this sheet"
+                  >
+                    <span>Header Row:</span>
+                    <select
+                      value={activeSheet.headerRowIndex}
+                      onChange={(e) => handleHeaderRowChange(Number(e.target.value))}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        fontSize: '13.5px',
+                        fontWeight: 600,
+                        color: 'var(--text-primary)',
+                        cursor: 'pointer',
+                        paddingRight: '22px',
+                      }}
+                    >
+                      <option value={-1}>No Header (Use A, B, C)</option>
+                      {(activeSheet.rawMatrix || []).slice(0, 10).map((r, idx) => {
+                        const preview = r
+                          .filter((c) => String(c ?? '').trim() !== '')
+                          .slice(0, 2)
+                          .join(', ');
+                        return (
+                          <option key={idx} value={idx}>
+                            Row {idx + 1} {preview ? `(${preview.slice(0, 18)})` : ''}
+                          </option>
+                        );
+                      })}
+                      {!activeSheet.rawMatrix && <option value={0}>Row 1</option>}
+                    </select>
+                  </div>
                   <button
                     type="button"
                     className="btn"
@@ -2425,6 +2509,243 @@ export function App() {
             </button>
             <button type="submit" className="btn btn-primary">
               Create Sheet
+            </button>
+          </div>
+        </form>
+      </dialog>
+
+      {/* Modal Dialog: Dynamic Field-Based Add Row Form */}
+      <dialog
+        ref={addRowDialogRef}
+        closedby="any"
+        className="editorial-dialog"
+        style={{ maxWidth: '640px' }}
+      >
+        <form onSubmit={(e) => handleSubmitAddRowForm(e, false)}>
+          <div className="dialog-header">
+            <div>
+              <h3 className="dialog-title">Add Row to "{activeSheet.name}"</h3>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Row #{(activeSheet.rows[activeSheet.rows.length - 1]?.excelRowNumber || activeSheet.rows.length) + 1} •{' '}
+                {activeSheet.fields.length} configured {activeSheet.fields.length === 1 ? 'field' : 'fields'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleAddBlankRow}
+                title="Insert a blank row immediately without filling out the form"
+              >
+                Insert Blank Row
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => addRowDialogRef.current?.close()}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="dialog-body"
+            style={{
+              maxHeight: '62vh',
+              overflowY: 'auto',
+              display: 'grid',
+              gridTemplateColumns: activeSheet.fields.length > 4 ? '1fr 1fr' : '1fr',
+              gap: '14px 16px',
+            }}
+          >
+            {activeSheet.fields.map((field, idx) => {
+              const colLetter = field.columnLetter || getExcelColumnLetter(idx);
+              const rawVal = newRowDraft[field.id] ?? '';
+              const fieldErr = newRowErrors[field.id];
+              const lookupChoices = field.type === 'lookup' ? getLookupOptions(field) : [];
+              const formulaPreview =
+                field.type === 'formula'
+                  ? formatCellValue(
+                      '',
+                      field,
+                      { id: '__preview__', cells: newRowDraft },
+                      activeSheet.fields
+                    )
+                  : '';
+
+              const setDraftField = (val: CellValue) => {
+                setNewRowDraft((prev) => ({ ...prev, [field.id]: val }));
+                if (newRowErrors[field.id]) {
+                  setNewRowErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[field.id];
+                    return next;
+                  });
+                }
+              };
+
+              return (
+                <div key={field.id} className="form-field">
+                  <label className="form-label">
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        minWidth: 0,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '11.5px',
+                          color: 'var(--text-muted)',
+                          backgroundColor: 'var(--bg-canvas)',
+                          border: '1px solid var(--border-hairline)',
+                          borderRadius: '4px',
+                          padding: '1px 5px',
+                        }}
+                      >
+                        {colLetter}
+                      </span>
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {field.label === colLetter ? `Column ${colLetter}` : field.label}
+                      </span>
+                      {field.validation.required && (
+                        <span className="req-dot" title="Required field">
+                          *
+                        </span>
+                      )}
+                    </span>
+                    <FieldTypeGlyph type={field.type} />
+                  </label>
+
+                  {field.type === 'select' ? (
+                    <select
+                      className="select-control"
+                      value={String(rawVal ?? '')}
+                      onChange={(e) => setDraftField(e.target.value)}
+                    >
+                      <option value="">— Select option —</option>
+                      {(field.selectOptions || []).map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.type === 'lookup' ? (
+                    <select
+                      className="select-control"
+                      value={String(rawVal ?? '')}
+                      onChange={(e) => setDraftField(e.target.value)}
+                    >
+                      <option value="">— Select linked record —</option>
+                      {lookupChoices.map((item) => (
+                        <option key={item.keyVal} value={item.keyVal}>
+                          {item.keyVal}
+                          {item.displayVal ? ` — ${item.displayVal}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.type === 'boolean' ? (
+                    <label className="checkbox-row" style={{ height: '38px' }}>
+                      <span>
+                        {rawVal === true || String(rawVal).toLowerCase() === 'true'
+                          ? 'Yes / True'
+                          : 'No / False'}
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={rawVal === true || String(rawVal).toLowerCase() === 'true'}
+                        onChange={(e) => setDraftField(e.target.checked)}
+                        style={{ accentColor: '#111111', width: '16px', height: '16px' }}
+                      />
+                    </label>
+                  ) : field.type === 'formula' ? (
+                    <input
+                      type="text"
+                      className="input-control mono"
+                      value={formulaPreview || '0'}
+                      readOnly
+                      disabled
+                      title={`Calculated automatically: ${field.formulaExpression || 'Formula'}`}
+                      style={{
+                        backgroundColor: '#FCFBF7',
+                        color: 'var(--text-muted)',
+                        cursor: 'not-allowed',
+                      }}
+                    />
+                  ) : (
+                    <input
+                      type={
+                        field.type === 'date'
+                          ? 'date'
+                          : field.type === 'number'
+                          ? 'number'
+                          : 'text'
+                      }
+                      step={field.type === 'number' ? 'any' : undefined}
+                      className={`input-control ${
+                        field.type === 'number' || field.type === 'date' ? 'mono' : ''
+                      }`}
+                      placeholder={
+                        field.type === 'number'
+                          ? field.numberFormat === 'currency'
+                            ? `${field.currencySymbol || '$'}0.00`
+                            : 'Enter number...'
+                          : `Enter ${field.label}...`
+                      }
+                      value={String(rawVal ?? '')}
+                      onChange={(e) => setDraftField(e.target.value)}
+                      autoFocus={idx === 0}
+                    />
+                  )}
+
+                  {fieldErr ? (
+                    <div
+                      style={{
+                        fontSize: '12.5px',
+                        color: 'var(--pastel-red-fg)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <IconWarning size={13} /> {fieldErr}
+                    </div>
+                  ) : field.description ? (
+                    <div className="form-hint">{field.description}</div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="dialog-footer">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => addRowDialogRef.current?.close()}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={(e) => handleSubmitAddRowForm(e, true)}
+              title="Insert this row and reset the form to add another row"
+            >
+              <IconPlus size={14} /> Add &amp; Add Another
+            </button>
+            <button type="submit" className="btn btn-primary">
+              <IconCheck size={14} /> Add Row
             </button>
           </div>
         </form>
