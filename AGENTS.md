@@ -26,12 +26,21 @@ tabula-loom/
 ├── .env.example          # Template for DATABASE_URL and Railway Storage variables
 ├── src/
 │   ├── main.tsx          # React entry point
-│   ├── App.tsx           # Dual-mode workspace (Spreadsheet Grid + Fields Configuration)
-│   ├── types.ts          # TypeScript interfaces for WorkbookProject, SheetData, FieldConfig
+│   ├── App.tsx           # Composition root: state, handlers, and layout wiring ONLY (no large JSX)
+│   ├── types.ts          # Shared interfaces/types (WorkbookProject, SheetData, FieldConfig, WorkspaceMode, ...)
 │   ├── xlsxUtils.ts      # Lossless 2D matrix parser, header detector, validator, exporter
+│   ├── draftStorage.ts   # IndexedDB local draft persistence
 │   ├── sampleData.ts     # Blank initial workbook state (EMPTY_WORKBOOK)
 │   ├── Icons.tsx         # Clean SVG icons and field type glyphs
-│   └── index.css         # Utilitarian minimalist UI theme (#F7F6F3 / #FFFFFF, 1px borders)
+│   ├── index.css         # Utilitarian minimalist UI theme (#F7F6F3 / #FFFFFF, 1px borders)
+│   ├── components/       # Presentational React components (one component per file, PascalCase)
+│   │   ├── TopNavbar, DraftBanner, HiddenSheetsBanner
+│   │   ├── FormulaBar, SheetGrid, FieldInspector      # Grid mode
+│   │   ├── SchemaView                                 # Schema mode
+│   │   ├── SheetTabsBar                               # Bottom sheet tabs
+│   │   └── DbFilesDialog, ExportDialog, NewSheetDialog, AddRowDialog
+│   ├── hooks/            # Reusable stateful logic (`useXxx.ts`), e.g. useColumnWidths
+│   └── utils/            # Pure, React-free helpers (base64, cellValues, sheetFactory)
 └── server/
     ├── index.ts          # Express API (/api/health, /api/workbooks) + static dist/ server
     ├── db.ts             # PostgreSQL connection pool and automatic DDL initializer
@@ -60,6 +69,15 @@ tabula-loom/
 - The default initial state in `src/sampleData.ts` (`EMPTY_WORKBOOK`) and new sheets created by the user must start completely blank (`A`, `B`, `C` columns with an empty row).
 
 ---
+
+## 5.0 Frontend Architecture (STRICT)
+- **Keep `App.tsx` thin.** It owns top-level state and handlers and renders components; never put large JSX blocks or new dialogs/panels inline in it.
+- **One component per file** in `src/components/`, named in PascalCase, with an exported `XxxProps` interface and typed props. New UI (dialog, panel, banner, toolbar) = new component file.
+- **Components are presentational**: receive data and callbacks via props, no direct `fetch` calls. Shared types live in `src/types.ts`, never redeclared per component.
+- **Reusable stateful logic** goes in `src/hooks/useXxx.ts`; **pure helpers** (no React, no DOM) go in `src/utils/`. Spreadsheet parsing/validation/export stays in `src/xlsxUtils.ts`.
+- If a component grows beyond roughly 300 lines, split it into smaller child components.
+- Dialogs use native `<dialog>`; the ref is created in `App.tsx` and passed as a prop.
+- Before finishing frontend changes run `node_modules/.bin/tsc -p tsconfig.app.json --noEmit` (or `yarn build`).
 
 ## 5. UI, Typography & Styling Protocol (STRICT)
 

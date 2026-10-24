@@ -85,3 +85,30 @@ export interface CellValidationError {
   fieldId: string;
   message: string;
 }
+
+export type WorkspaceMode = 'grid' | 'schema';
+
+export type SheetErrors = Record<string, CellValidationError>;
+
+export interface LookupOption {
+  keyVal: string;
+  displayVal: string;
+  sheetName: string;
+}
+
+export interface DbStatus {
+  checked: boolean;
+  connected: boolean;
+  error: string | null;
+  storageMode: string;
+}
+
+export interface ActiveCellInfo {
+  coord: string;
+  field: FieldConfig;
+  row: RowRecord;
+  rawValue: CellValue | undefined;
+  err: CellValidationError | undefined;
+  rowIdx: number;
+  displayRowNum: number;
+}
