@@ -1100,7 +1100,7 @@ export function App() {
                 )}
 
                 {/* Right-side simple sheet controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <div className="formula-bar-actions">
                   <div className="search-box">
                     <IconSearch size={14} />
                     <input
@@ -2243,8 +2243,6 @@ export function App() {
             {filteredRows.length} {filteredRows.length === 1 ? 'Row' : 'Rows'} •{' '}
             {visibleFields.length} {visibleFields.length === 1 ? 'Column' : 'Columns'}
           </span>
-          <span>•</span>
-          <span>Double-click any cell to edit</span>
         </div>
       </footer>
 
